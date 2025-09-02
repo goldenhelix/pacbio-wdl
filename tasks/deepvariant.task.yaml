@@ -1,0 +1,159 @@
+name: DeepVariant
+description: Call variants from PacBio HiFi reads using DeepVariant.
+
+agent_requirements:
+  cpu_cores: 64
+  memory_gb: 128
+
+parameters:
+  - name: sample_id
+    label: Sample ID
+    type: string
+    optional: false
+
+  - name: aligned_bam
+    label: Aligned BAM
+    type: file
+
+  - name: output_folder
+    label: Output Folder
+    type: directory
+    supports_location_mode: 'no_append'
+  
+  - name: cache_udocker_images
+    label: Cache Udocker Image
+    type: boolean
+    value: true
+    group: Advanced Options
+
+steps:
+- name: deepvariant
+  type: cmd
+  description: Run DeepVariant workflow
+  args:
+      - |- # shell
+        set -eu pipefail
+
+        # Extract task name from current working directory (temporary until this is defined in RC2)
+        # TASK_NAME=$(basename "$(dirname "$(dirname "$(dirname "$(dirname "$PWD")")")")")
+        echo "Task name: $TASK_NAME"
+
+        # Function to handle miniwdl failure
+        handle_miniwdl_failure() {
+          local exit_code=$1
+          echo "MiniWDL run failed with exit code $exit_code"
+          echo "Capturing debug information..."
+          bash "$TASK_DIR/miniwdl-debug-capture.sh" /scratch/_LAST "$output_folder" "$TASK_NAME"
+          exit $exit_code
+        }
+
+        # Set up environment
+
+        # Resources path
+        PB_RESOURCES_DIR="${WORKSPACE_DIR}/${RESOURCES_PATH}/hifi-wdl-resources-v3.0.0"
+
+        # Set environment variables
+        export MINIWDL__SCHEDULER__CONTAINER_BACKEND=udocker
+        export MINIWDL__FILE_IO__ALLOW_ANY_INPUT=true
+        export MINIWDL__SCHEDULER__TASK_CONCURRENCY=8
+        export UDOCKER_DIR=/scratch/.udocker
+
+        # Set up reference FASTA
+        REF_FASTA="${PB_RESOURCES_DIR}/GRCh38/human_GRCh38_no_alt_analysis_set.fasta"
+        REF_INDEX="${PB_RESOURCES_DIR}/GRCh38/human_GRCh38_no_alt_analysis_set.fasta.fai"
+
+        # Verify reference files exist
+        if [ ! -f "$REF_FASTA" ]; then
+          echo "Error: Reference FASTA file not found at $REF_FASTA"
+          echo "Please ensure the PacBio WDL resources have been downloaded using the Download PacBio Reference Data Resources task"
+          exit 1
+        fi
+
+        if [ ! -f "$REF_INDEX" ]; then
+          echo "Error: Reference FASTA index file not found at $REF_INDEX"
+          echo "Please ensure the PacBio WDL resources have been downloaded using the Download PacBio Reference Data Resources task"
+          exit 1
+        fi
+
+        # Copy reference files to /scratch
+        echo "Copying reference files to /scratch..."
+        cp "$REF_FASTA" /scratch/
+        cp "$REF_INDEX" /scratch/
+        LOCAL_REF_FASTA="/scratch/$(basename "$REF_FASTA")"
+        LOCAL_REF_INDEX="/scratch/$(basename "$REF_INDEX")"
+
+        # Find BAM index file
+        BAM_INDEX="${aligned_bam}.bai"
+        if [ ! -f "$BAM_INDEX" ]; then
+          echo "Error: BAM index file not found at $BAM_INDEX"
+          echo "Please ensure the BAM file is indexed"
+          exit 1
+        fi
+
+        cp "${aligned_bam}" /scratch/
+        cp "$BAM_INDEX" /scratch/
+        LOCAL_BAM="/scratch/$(basename "${aligned_bam}")"
+        LOCAL_BAM_INDEX="/scratch/$(basename "${BAM_INDEX}")"
+
+        # Pull udocker layers from cache if requested
+        if [ -d "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}" ]; then
+          echo "Pulling udocker image from cache..."
+          mkdir -p /scratch/.udocker
+          cp -R "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}"/* /scratch/.udocker/
+        fi
+
+        # Create JSON structure for deepvariant.wdl inputs
+        cat > /scratch/inputs.json << EOF
+        {
+            "deepvariant.sample_id": "$sample_id",
+            "deepvariant.aligned_bams": [
+              "$LOCAL_BAM"
+            ], 
+            "deepvariant.aligned_bam_indices": [
+              "$LOCAL_BAM_INDEX"
+            ],
+            "deepvariant.ref_fasta": "$LOCAL_REF_FASTA",
+            "deepvariant.ref_index": "$LOCAL_REF_INDEX",
+            "deepvariant.ref_name": "GRCh38",
+            "deepvariant.gpu": false,
+            "deepvariant.default_runtime_attributes": {
+                "backend": "HPC",
+                "preemptible_tries": 0,
+                "max_retries": 3,
+                "zones": "",
+                "cpuPlatform": "",
+                "gpuType": "",
+                "container_registry": "quay.io/pacbio"
+            }
+        }
+        EOF
+        cat /scratch/inputs.json
+
+        # Run miniwdl and capture exit code, but don't exit on failure
+        set +e
+        miniwdl run \
+          "${TASK_DIR}/wdl/wdl-common/wdl/workflows/deepvariant/deepvariant.wdl" \
+          --dir /scratch \
+          -i /scratch/inputs.json 
+        
+        MINIWDL_EXIT_CODE=$?
+        set -e
+        
+        # Copy udocker cache to output folder
+        if [ "$cache_udocker_images" = true ] && [ ! -d "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}" ]; then
+          echo "Copying udocker cache to resources folder..."
+          mkdir -p "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}"
+          cp -r /scratch/.udocker/layers /scratch/.udocker/repos "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}" 2>/dev/null || true
+        fi
+
+        # Process all files and values in outputs.json
+        bash "$TASK_DIR/process-outputs.sh" "$output_folder" "$sample_id" 
+
+        if [ $MINIWDL_EXIT_CODE -ne 0 ]; then
+          echo "MiniWDL run failed with exit code $MINIWDL_EXIT_CODE"
+          handle_miniwdl_failure $MINIWDL_EXIT_CODE
+        fi
+        
+        echo "DeepVariant variant calling completed successfully"
+        echo "Output files copied to: $output_folder"
+

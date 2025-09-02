@@ -1,0 +1,129 @@
+name: mosdepth
+description: Run mosdepth to calculate depth of coverage for BAM. 
+
+agent_requirements: 
+  cpu_cores: 4
+  memory_gb: 8
+
+parameters:
+  - name: sample_id
+    label: Sample ID
+    type: string
+    
+  - name: aligned_bam
+    label: Aligned BAM
+    type: file
+
+  - name: output_folder
+    label: Output Folder
+    type: directory
+    supports_location_mode: 'no_append'
+
+  - name: infer_sex
+    label: Infer Sex? 
+    type: boolean
+    value: true 
+
+  - name: cache_udocker_images
+    label: Cache Udocker Image
+    type: boolean
+    value: true
+
+steps: 
+- name: mosdepth
+  type: cmd
+  description: Run mosdepth to calculate depth of coverage for BAM. 
+  args: 
+    - |- # shell
+      set -eu pipefail
+
+      # Set up resource path
+      PB_RESOURCES_DIR="${WORKSPACE_DIR}/${RESOURCES_PATH}/hifi-wdl-resources-v3.0.0"
+      # TASK_NAME=$(basename "$(dirname "$(dirname "$(dirname "$(dirname "$PWD")")")")")
+
+      # Set environment variables for miniwdl
+      export MINIWDL__SCHEDULER__CONTAINER_BACKEND=udocker
+      export MINIWDL__FILE_IO__ALLOW_ANY_INPUT=true
+      export MINIWDL__SCHEDULER__TASK_CONCURRENCY=8
+      export UDOCKER_DIR=/scratch/.udocker
+      
+      # Pull udocker layers from cache if requested
+      if [ -d "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}" ]; then
+        echo "Pulling udocker image from cache..."
+        mkdir -p /scratch/.udocker
+        cp -R "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}"/* /scratch/.udocker/
+      fi
+      
+      # Find BAM index file
+      BAM_INDEX="${aligned_bam}.bai"
+      if [ ! -f "$BAM_INDEX" ]; then
+        echo "Error: BAM index file not found at $BAM_INDEX"
+        echo "Please ensure the BAM file is indexed"
+        exit 1
+      fi
+
+      # Copy BAM files to /scratch
+      echo "Copying BAM files to /scratch..."
+      cp "${aligned_bam}" /scratch/
+      cp "$BAM_INDEX" /scratch/
+      LOCAL_BAM="/scratch/$(basename "${aligned_bam}")"
+      LOCAL_BAM_INDEX="/scratch/$(basename "${BAM_INDEX}")"
+      echo "LOCAL_BAM: $LOCAL_BAM"
+      echo "LOCAL_BAM_INDEX: $LOCAL_BAM_INDEX"
+
+      # Create JSON structure for mosdepth inputs
+      cat > /scratch/inputs.json << EOF
+      {
+        "mosdepth.sample_id": "$sample_id",
+        "mosdepth.ref_name": "GRCh38",
+        "mosdepth.aligned_bam": "$LOCAL_BAM",
+        "mosdepth.aligned_bam_index": "$LOCAL_BAM_INDEX",
+        "mosdepth.infer_sex": $infer_sex,
+        "mosdepth.runtime_attributes": {
+          "backend": "HPC",
+          "preemptible_tries": 0,
+          "max_retries": 3,
+          "zones": "",
+          "cpuPlatform": "",
+          "gpuType": "",
+          "container_registry": "quay.io/pacbio"
+        }
+      }
+      EOF
+      cat /scratch/inputs.json
+
+      # Run miniwdl
+      set +e
+      miniwdl run \
+        "${TASK_DIR}/wdl/wdl-common/wdl/tasks/mosdepth.wdl" \
+        --dir /scratch \
+        --runtime-cpu-max=$AGENT_CPU_CORES \
+        --runtime-memory-max=${AGENT_MEMORY_GB}G \
+        -i /scratch/inputs.json
+      MINIWDL_EXIT_CODE=$?
+      set -e
+
+      echo "mosdepth completed successfully"
+      
+      if [ "$cache_udocker_images" = true ] && [ ! -d "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}" ]; then
+        echo "Copying udocker cache to resources folder..."
+        mkdir -p "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}"
+        cp -r /scratch/.udocker/layers /scratch/.udocker/repos "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}" 2>/dev/null || true
+      fi
+
+      # Process all files and values in outputs.json
+      bash "$TASK_DIR/process-outputs.sh" "$output_folder" "$sample_id" 
+
+      # Function to handle miniwdl failure
+      handle_miniwdl_failure() {
+        local exit_code=$1
+        echo "MiniWDL run failed with exit code $exit_code"
+        echo "Capturing debug information..."
+        bash "$TASK_DIR/miniwdl-debug-capture.sh" /scratch/_LAST "$output_folder" "$TASK_NAME"
+        exit $exit_code
+      }
+
+      if [ $MINIWDL_EXIT_CODE -ne 0 ]; then
+          echo "MiniWDL run failed with exit code $MINIWDL_EXIT_CODE"
+          handle_miniwdl_failure $MINIWDL_EXIT_CODE
+      fi

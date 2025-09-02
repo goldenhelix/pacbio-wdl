@@ -1,0 +1,202 @@
+name: TRGT
+description: "Genotype tandem repeats from aligned reads using TRGT."
+auto_generate_session_for_account: "{workspaceBot}"
+
+agent_requirements:
+  cpu_cores: 32
+  memory_gb: 64
+
+parameters:
+  - name: sample_id
+    label: Sample ID
+    type: string
+    description: "Sample ID"
+    
+  - name: aligned_bam
+    label: Aligned BAM
+    type: file
+    pattern_match:
+      - "*.bam"
+    description: "Aligned BAM file"
+
+
+    
+  - name: output_folder
+    label: Output Folder
+    type: directory
+    supports_location_mode: 'no_append'
+    
+  - name: cache_udocker_images
+    label: Cache Udocker Image
+    type: boolean
+    value: true
+
+steps:
+  - name: trgt
+    type: cmd
+    description: "Genotype tandem repeats from aligned reads using TRGT."
+    args:
+      - |- # shell
+        set -eu pipefail
+
+        # Set up resource path
+        PB_RESOURCES_DIR="${WORKSPACE_DIR}/${RESOURCES_PATH}/hifi-wdl-resources-v3.0.0"
+        # TASK_NAME=$(basename "$(dirname "$(dirname "$(dirname "$(dirname "$PWD")")")")")
+        
+        # Ensure TASK_NAME is set for debug capture
+        if [ -z "${TASK_NAME:-}" ]; then
+          TASK_NAME="trgt"
+          echo "Warning: TASK_NAME not set, using default: $TASK_NAME"
+        fi
+
+        # Get sample sex from catalog
+        echo "Looking up sample sex for: $sample_id"
+        set +e
+        sex=$(gautil client catalog-export SampleCatalog Sample:eq:"$sample_id" --fields="Sex" | tail -n 1 | tr -d '\r\n\t ')
+        sex_lookup_exit_code=$?
+        set -e
+        
+        if [ $sex_lookup_exit_code -ne 0 ] || [ -z "$sex" ] || [ "$sex" != "Male" ] && [ "$sex" != "Female" ]; then
+          echo "Warning: Could not determine sex for sample $sample_id (exit code: $sex_lookup_exit_code, value: '$sex'), defaulting to Female"
+          sex="Female"
+        fi
+        
+        # Convert to uppercase for consistency with existing logic
+        if [ "$sex" = "Male" ]; then
+          sex="MALE"
+        elif [ "$sex" = "Female" ]; then
+          sex="FEMALE"
+        fi
+
+        # Function to handle miniwdl failure
+        handle_miniwdl_failure() {
+          local exit_code=$1
+          echo "MiniWDL run failed with exit code $exit_code"
+          echo "Capturing debug information..."
+          bash "$TASK_DIR/miniwdl-debug-capture.sh" /scratch/_LAST "$output_folder" "$TASK_NAME"
+          exit $exit_code
+        }
+
+        # Set environment variables for miniwdl
+        export MINIWDL__SCHEDULER__CONTAINER_BACKEND=udocker
+        export MINIWDL__FILE_IO__ALLOW_ANY_INPUT=true
+        export MINIWDL__SCHEDULER__TASK_CONCURRENCY=8
+        export UDOCKER_DIR=/scratch/.udocker
+        
+        # Set up reference files (hardcoded from ref_map)
+        REF_FASTA="${PB_RESOURCES_DIR}/GRCh38/human_GRCh38_no_alt_analysis_set.fasta"
+        REF_INDEX="${PB_RESOURCES_DIR}/GRCh38/human_GRCh38_no_alt_analysis_set.fasta.fai"
+        TRGT_BED="${PB_RESOURCES_DIR}/GRCh38/trgt/adotto_strchive_20250626.hg38.bed.gz"
+
+        # Find index files
+        aligned_bam_index="${aligned_bam}.bai"
+
+        # Verify reference files exist
+        if [ ! -f "$REF_FASTA" ]; then
+          echo "Error: Reference FASTA file not found at $REF_FASTA"
+          echo "Please ensure the PacBio WDL resources have been downloaded using the Download PacBio Reference Data Resources task"
+          exit 1
+        fi
+
+        if [ ! -f "$REF_INDEX" ]; then
+          echo "Error: Reference FASTA index file not found at $REF_INDEX"
+          echo "Please ensure the PacBio WDL resources have been downloaded using the Download PacBio Reference Data Resources task"
+          exit 1
+        fi
+
+        if [ ! -f "$TRGT_BED" ]; then
+          echo "Error: TRGT BED file not found at $TRGT_BED"
+          echo "Please ensure the PacBio WDL resources have been downloaded using the Download PacBio Reference Data Resources task"
+          exit 1
+        fi
+        
+        # Pull udocker layers from cache if requested
+        if [ -d "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}" ]; then
+          echo "Pulling udocker image from cache..."
+          mkdir -p /scratch/.udocker
+          cp -R "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}"/* /scratch/.udocker/
+        fi
+        
+        # Check for required input files
+        if [ ! -f "$aligned_bam" ]; then
+          echo "Error: Aligned BAM file not found at $aligned_bam"
+          exit 1
+        fi
+        
+        if [ ! -f "$aligned_bam_index" ]; then
+          echo "Error: BAM index file not found at $aligned_bam_index"
+          exit 1
+        fi
+
+        # Copy input files to /scratch
+        echo "Copying input files to /scratch..."
+        cp "${aligned_bam}" /scratch/
+        cp "$aligned_bam_index" /scratch/
+        
+        # Copy reference files to /scratch
+        echo "Copying reference files to /scratch..."
+        cp "$REF_FASTA" /scratch/
+        cp "$REF_INDEX" /scratch/
+        cp "$TRGT_BED" /scratch/
+        
+        # Set local file paths
+        LOCAL_BAM="/scratch/$(basename "${aligned_bam}")"
+        LOCAL_BAM_INDEX="/scratch/$(basename "${aligned_bam_index}")"
+        LOCAL_REF_FASTA="/scratch/$(basename "$REF_FASTA")"
+        LOCAL_REF_INDEX="/scratch/$(basename "$REF_INDEX")"
+        LOCAL_TRGT_BED="/scratch/$(basename "$TRGT_BED")"
+
+        # Create JSON structure for trgt inputs
+        cat > /scratch/trgt_inputs.json << EOF
+        {
+          "trgt.sample_id": "$sample_id",
+          "trgt.aligned_bam": "$LOCAL_BAM",
+          "trgt.aligned_bam_index": "$LOCAL_BAM_INDEX",
+          "trgt.ref_fasta": "$LOCAL_REF_FASTA",
+          "trgt.ref_index": "$LOCAL_REF_INDEX",
+          "trgt.trgt_bed": "$LOCAL_TRGT_BED",
+          "trgt.out_prefix": "${sample_id}",
+          "trgt.sex": "${sex}",
+          "trgt.runtime_attributes": {
+            "backend": "HPC",
+            "preemptible_tries": 0,
+            "max_retries": 1,
+            "zones": "",
+            "cpuPlatform": "",
+            "gpuType": "",
+            "container_registry": "quay.io/pacbio"
+          }
+        }
+        EOF
+        cat /scratch/trgt_inputs.json
+
+        # Run trgt with miniwdl
+        echo "Running TRGT..."
+        set +e
+        miniwdl run \
+          --task trgt \
+          "${TASK_DIR}/wdl/wdl-common/wdl/tasks/trgt.wdl" \
+          --dir /scratch \
+          --runtime-cpu-max=$AGENT_CPU_CORES \
+          --runtime-memory-max=${AGENT_MEMORY_GB}G \
+          -i /scratch/trgt_inputs.json
+        TRGT_EXIT_CODE=$?
+        set -e
+
+        if [ $TRGT_EXIT_CODE -ne 0 ]; then
+          echo "TRGT failed with exit code $TRGT_EXIT_CODE"
+          handle_miniwdl_failure $TRGT_EXIT_CODE
+        fi
+
+        echo "TRGT completed successfully"
+        bash "$TASK_DIR/process-outputs.sh" "$output_folder" "${sample_id}" 
+        
+        # Copy udocker cache to output folder
+        if [ "$cache_udocker_images" = true ] && [ ! -d "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}" ]; then
+          echo "Copying udocker cache to resources folder..."
+          mkdir -p "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}"
+          cp -r /scratch/.udocker/layers /scratch/.udocker/repos "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}" 2>/dev/null || true
+        fi
+
+        echo "TRGT tandem repeat genotyping completed successfully"
+        echo "Output files copied to: $output_folder" 

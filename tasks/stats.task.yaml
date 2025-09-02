@@ -1,0 +1,398 @@
+name: Secondary Analysis Stats
+description: "Generate BAM statistics, TRGT coverage dropouts, small variant statistics, structural variant statistics, and CpG methylation analysis"
+
+agent_requirements:
+  cpu_cores: 8
+  memory_gb: 16
+
+parameters:
+  - name: sample_id
+    label: "Sample ID"
+    type: string
+
+  - name: haplotagged_bam
+    label: "Haplotagged BAM"
+    type: file
+    pattern_match: 
+      - "*.bam"
+
+  - name: output_folder
+    label: "Output Folder"
+    type: directory
+    supports_location_mode: "no_append"
+
+  - name: cache_udocker_images
+    label: "Cache Udocker Images"
+    type: boolean
+    value: true
+
+steps:
+  - name: secondary_analysis_statistics
+    type: cmd
+    description: "Generate comprehensive secondary analysis statistics"
+    args:
+      - |- # shell
+        set -eu pipefail
+
+        # Set up resource path
+        PB_RESOURCES_DIR="${WORKSPACE_DIR}/${RESOURCES_PATH}/hifi-wdl-resources-v3.0.0"
+        # TASK_NAME=$(basename "$(dirname "$(dirname "$(dirname "$(dirname "$PWD")")")")")
+
+        # Function to handle miniwdl failure
+        handle_miniwdl_failure() {
+          local exit_code=$1
+          echo "MiniWDL run failed with exit code $exit_code"
+          echo "Capturing debug information..."
+          bash "$TASK_DIR/miniwdl-debug-capture.sh" /scratch/_LAST "$output_folder" "$TASK_NAME"
+          exit $exit_code
+        }
+
+        # Set environment variables for miniwdl
+        export MINIWDL__SCHEDULER__CONTAINER_BACKEND=udocker
+        export MINIWDL__FILE_IO__ALLOW_ANY_INPUT=true
+        export MINIWDL__SCHEDULER__TASK_CONCURRENCY=8
+        export UDOCKER_DIR=/scratch/.udocker
+        
+        # Common variables
+        REF_NAME="GRCh38"
+        REF_FASTA="${PB_RESOURCES_DIR}/GRCh38/human_GRCh38_no_alt_analysis_set.fasta"
+        REF_INDEX="${PB_RESOURCES_DIR}/GRCh38/human_GRCh38_no_alt_analysis_set.fasta.fai"
+        TRGT_BED="${PB_RESOURCES_DIR}/GRCh38/trgt/adotto_strchive_20250626.hg38.bed.gz"
+
+        # Find index files
+        haplotagged_bam_index="${haplotagged_bam}.bai"
+
+        # Infer VCF files from upstream tasks
+        # Small variant VCF from DeepVariant
+        small_variant_vcf=$(echo "${haplotagged_bam}" | cut -d '.' -f 1).small_variants.phased.vcf.gz
+        small_variant_vcf_index="${small_variant_vcf}.tbi"
+        
+        # SV VCF from Sawfish
+        sv_vcf=$(echo "${haplotagged_bam}" | cut -d '.' -f 1).structural_variants.phased.vcf.gz
+        sv_vcf_index="${sv_vcf}.tbi"
+        
+        # Pull udocker layers from cache if requested
+        if [ -d "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}" ]; then
+          echo "Pulling udocker image from cache..."
+          mkdir -p /scratch/.udocker
+          cp -R "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}"/* /scratch/.udocker/
+        fi
+        
+        # Check for required input files
+        if [ ! -f "$haplotagged_bam" ]; then
+          echo "Error: Haplotagged BAM file not found at $haplotagged_bam"
+          exit 1
+        fi
+        
+        if [ ! -f "$haplotagged_bam_index" ]; then
+          echo "Error: BAM index file not found at $haplotagged_bam_index"
+          exit 1
+        fi
+
+        # Check for VCF files
+        if [ ! -f "$small_variant_vcf" ]; then
+          echo "Error: Small variant VCF file not found at $small_variant_vcf"
+          echo "Please ensure DeepVariant has been run on this sample"
+          exit 1
+        fi
+        
+        if [ ! -f "$small_variant_vcf_index" ]; then
+          echo "Error: Small variant VCF index file not found at $small_variant_vcf_index"
+          exit 1
+        fi
+        
+        if [ ! -f "$sv_vcf" ]; then
+          echo "Error: Structural variant VCF file not found at $sv_vcf"
+          echo "Please ensure Sawfish has been run on this sample"
+          exit 1
+        fi
+        
+        if [ ! -f "$sv_vcf_index" ]; then
+          echo "Error: Structural variant VCF index file not found at $sv_vcf_index"
+          exit 1
+        fi
+
+        # Verify reference files exist
+        if [ ! -f "$REF_FASTA" ]; then
+          echo "Error: Reference FASTA file not found at $REF_FASTA"
+          echo "Please ensure the PacBio WDL resources have been downloaded using the Download PacBio Reference Data Resources task"
+          exit 1
+        fi
+
+        if [ ! -f "$REF_INDEX" ]; then
+          echo "Error: Reference FASTA index file not found at $REF_INDEX"
+          echo "Please ensure the PacBio WDL resources have been downloaded using the Download PacBio Reference Data Resources task"
+          exit 1
+        fi
+
+        # Verify TRGT BED file exists
+        if [ ! -f "$TRGT_BED" ]; then
+          echo "Error: TRGT BED file not found at $TRGT_BED"
+          echo "Please ensure the PacBio WDL resources have been downloaded using the Download PacBio Reference Data Resources task"
+          exit 1
+        fi
+
+        # Copy input files to /scratch
+        echo "Copying input files to /scratch..."
+        cp "${haplotagged_bam}" /scratch/
+        cp "$haplotagged_bam_index" /scratch/
+        cp "$small_variant_vcf" /scratch/
+        cp "$small_variant_vcf_index" /scratch/
+        cp "$sv_vcf" /scratch/
+        cp "$sv_vcf_index" /scratch/
+        
+        # Copy reference files to /scratch
+        echo "Copying reference files to /scratch..."
+        cp "$REF_FASTA" /scratch/
+        cp "$REF_INDEX" /scratch/
+        
+        # Copy TRGT BED file to /scratch
+        echo "Copying TRGT BED file to /scratch..."
+        cp "$TRGT_BED" /scratch/
+        
+        # Set local file paths
+        LOCAL_BAM="/scratch/$(basename "${haplotagged_bam}")"
+        LOCAL_BAM_INDEX="/scratch/$(basename "${haplotagged_bam_index}")"
+        LOCAL_SMALL_VARIANT_VCF="/scratch/$(basename "${small_variant_vcf}")"
+        LOCAL_SV_VCF="/scratch/$(basename "${sv_vcf}")"
+        LOCAL_REF_FASTA="/scratch/$(basename "$REF_FASTA")"
+        LOCAL_REF_INDEX="/scratch/$(basename "$REF_INDEX")"
+        LOCAL_TRGT_BED="/scratch/$(basename "$TRGT_BED")"
+
+        echo "*************************"
+        echo "Starting secondary analysis statistics for $sample_id"
+        echo "*************************"
+
+        # Step 1: Run BAM statistics
+        echo "Step 1: Running BAM statistics..."
+        
+        # Create JSON structure for bam_stats inputs
+        cat > /scratch/bam_stats_inputs.json << EOF
+        {
+          "bam_stats.sample_id": "$sample_id",
+          "bam_stats.ref_name": "$REF_NAME",
+          "bam_stats.bam": "$LOCAL_BAM",
+          "bam_stats.bam_index": "$LOCAL_BAM_INDEX",
+          "bam_stats.runtime_attributes": {
+            "backend": "HPC",
+            "preemptible_tries": 0,
+            "max_retries": 1,
+            "zones": "",
+            "cpuPlatform": "",
+            "gpuType": "",
+            "container_registry": "quay.io/pacbio"
+          }
+        }
+        EOF
+        cat /scratch/bam_stats_inputs.json
+
+        # Run bam_stats with miniwdl
+        set +e
+        miniwdl run \
+          --task bam_stats \
+          "${TASK_DIR}/wdl/wdl-common/wdl/tasks/bam_stats.wdl" \
+          --dir /scratch \
+          --runtime-cpu-max=$AGENT_CPU_CORES \
+          --runtime-memory-max=${AGENT_MEMORY_GB}G \
+          -i /scratch/bam_stats_inputs.json
+        BAM_STATS_EXIT_CODE=$?
+        set -e
+
+        if [ $BAM_STATS_EXIT_CODE -ne 0 ]; then
+          echo "BAM statistics failed with exit code $BAM_STATS_EXIT_CODE"
+          handle_miniwdl_failure $BAM_STATS_EXIT_CODE
+        fi
+
+        echo "BAM statistics completed successfully"
+
+        # Copy output of bam_stats to output folder
+        bash "$TASK_DIR/process-outputs.sh" "$output_folder" "${sample_id}" 
+
+        # Step 2: Run TRGT coverage dropouts
+        echo "Step 2: Running TRGT coverage dropouts..."
+
+        # Create JSON structure for coverage_dropouts inputs
+        cat > /scratch/coverage_dropouts_inputs.json << EOF
+        {
+          "coverage_dropouts.aligned_bam": "$LOCAL_BAM",
+          "coverage_dropouts.aligned_bam_index": "$LOCAL_BAM_INDEX",
+          "coverage_dropouts.trgt_bed": "$LOCAL_TRGT_BED",
+          "coverage_dropouts.out_prefix": "${sample_id}",
+          "coverage_dropouts.runtime_attributes": {
+            "backend": "HPC",
+            "preemptible_tries": 0,
+            "max_retries": 1,
+            "zones": "",
+            "cpuPlatform": "",
+            "gpuType": "",
+            "container_registry": "quay.io/pacbio"
+          }
+        }
+        EOF
+        cat /scratch/coverage_dropouts_inputs.json
+
+        # Run coverage_dropouts with miniwdl
+        set +e
+        miniwdl run \
+          --task coverage_dropouts \
+          "${TASK_DIR}/wdl/wdl-common/wdl/tasks/trgt.wdl" \
+          --dir /scratch \
+          --runtime-cpu-max=$AGENT_CPU_CORES \
+          --runtime-memory-max=${AGENT_MEMORY_GB}G \
+          -i /scratch/coverage_dropouts_inputs.json
+        COVERAGE_DROPOUTS_EXIT_CODE=$?
+        set -e
+
+        if [ $COVERAGE_DROPOUTS_EXIT_CODE -ne 0 ]; then
+          echo "TRGT coverage dropouts failed with exit code $COVERAGE_DROPOUTS_EXIT_CODE"
+          handle_miniwdl_failure $COVERAGE_DROPOUTS_EXIT_CODE
+        fi
+
+        echo "TRGT coverage dropouts completed successfully"
+
+        # Copy output of coverage_dropouts to output folder
+        bash "$TASK_DIR/process-outputs.sh" "$output_folder" "${sample_id}" 
+
+        # Step 3: Run bcftools stats and ROH on small variants
+        echo "Step 3: Running bcftools stats and ROH on small variants..."
+
+        # Create JSON structure for bcftools_stats_roh_small_variants inputs
+        cat > /scratch/bcftools_stats_roh_inputs.json << EOF
+        {
+          "bcftools_stats_roh_small_variants.sample_id": "$sample_id",
+          "bcftools_stats_roh_small_variants.vcf": "$LOCAL_SMALL_VARIANT_VCF",
+          "bcftools_stats_roh_small_variants.ref_fasta": "$LOCAL_REF_FASTA",
+          "bcftools_stats_roh_small_variants.ref_name": "$REF_NAME",
+          "bcftools_stats_roh_small_variants.runtime_attributes": {
+            "backend": "HPC",
+            "preemptible_tries": 0,
+            "max_retries": 1,
+            "zones": "",
+            "cpuPlatform": "",
+            "gpuType": "",
+            "container_registry": "quay.io/pacbio"
+          }
+        }
+        EOF
+        cat /scratch/bcftools_stats_roh_inputs.json
+
+        # Run bcftools_stats_roh_small_variants with miniwdl
+        set +e
+        miniwdl run \
+          --task bcftools_stats_roh_small_variants \
+          "${TASK_DIR}/wdl/wdl-common/wdl/tasks/bcftools.wdl" \
+          --dir /scratch \
+          --runtime-cpu-max=$AGENT_CPU_CORES \
+          --runtime-memory-max=${AGENT_MEMORY_GB}G \
+          -i /scratch/bcftools_stats_roh_inputs.json
+        BCFTOOLS_STATS_ROH_EXIT_CODE=$?
+        set -e
+
+        if [ $BCFTOOLS_STATS_ROH_EXIT_CODE -ne 0 ]; then
+          echo "bcftools stats and ROH failed with exit code $BCFTOOLS_STATS_ROH_EXIT_CODE"
+          handle_miniwdl_failure $BCFTOOLS_STATS_ROH_EXIT_CODE
+        fi
+
+        echo "bcftools stats and ROH completed successfully"
+
+        # Copy output of bcftools_stats_roh_small_variants to output folder
+        bash "$TASK_DIR/process-outputs.sh" "$output_folder" "${sample_id}" 
+
+        # Step 4: Run structural variant statistics
+        echo "Step 4: Running structural variant statistics..."
+
+        # Create JSON structure for sv_stats inputs
+        cat > /scratch/sv_stats_inputs.json << EOF
+        {
+          "sv_stats.vcf": "$LOCAL_SV_VCF",
+          "sv_stats.runtime_attributes": {
+            "backend": "HPC",
+            "preemptible_tries": 0,
+            "max_retries": 1,
+            "zones": "",
+            "cpuPlatform": "",
+            "gpuType": "",
+            "container_registry": "quay.io/pacbio"
+          }
+        }
+        EOF
+        cat /scratch/sv_stats_inputs.json
+
+        # Run sv_stats with miniwdl
+        set +e
+        miniwdl run \
+          --task sv_stats \
+          "${TASK_DIR}/wdl/wdl-common/wdl/tasks/bcftools.wdl" \
+          --dir /scratch \
+          --runtime-cpu-max=$AGENT_CPU_CORES \
+          --runtime-memory-max=${AGENT_MEMORY_GB}G \
+          -i /scratch/sv_stats_inputs.json
+        SV_STATS_EXIT_CODE=$?
+        set -e
+
+        if [ $SV_STATS_EXIT_CODE -ne 0 ]; then
+          echo "Structural variant statistics failed with exit code $SV_STATS_EXIT_CODE"
+          handle_miniwdl_failure $SV_STATS_EXIT_CODE
+        fi
+
+        echo "Structural variant statistics completed successfully"
+        # Copy output of sv_stats to output folder
+        bash "$TASK_DIR/process-outputs.sh" "$output_folder" "${sample_id}" 
+
+        # Step 5: Run CpG methylation analysis
+        echo "Step 5: Running CpG methylation analysis..."
+
+        # Create JSON structure for cpg_pileup inputs
+        cat > /scratch/cpg_pileup_inputs.json << EOF
+        {
+          "cpg_pileup.haplotagged_bam": "$LOCAL_BAM",
+          "cpg_pileup.haplotagged_bam_index": "$LOCAL_BAM_INDEX",
+          "cpg_pileup.out_prefix": "${sample_id}",
+          "cpg_pileup.ref_fasta": "$LOCAL_REF_FASTA",
+          "cpg_pileup.ref_index": "$LOCAL_REF_INDEX",
+          "cpg_pileup.runtime_attributes": {
+            "backend": "HPC",
+            "preemptible_tries": 0,
+            "max_retries": 1,
+            "zones": "",
+            "cpuPlatform": "",
+            "gpuType": "",
+            "container_registry": "quay.io/pacbio"
+          }
+        }
+        EOF
+        cat /scratch/cpg_pileup_inputs.json
+
+        # Run cpg_pileup with miniwdl
+        set +e
+        miniwdl run \
+          --task cpg_pileup \
+          "${TASK_DIR}/wdl/wdl-common/wdl/tasks/cpg_pileup.wdl" \
+          --dir /scratch \
+          --runtime-cpu-max=$AGENT_CPU_CORES \
+          --runtime-memory-max=${AGENT_MEMORY_GB}G \
+          -i /scratch/cpg_pileup_inputs.json
+        CPG_PILEUP_EXIT_CODE=$?
+        set -e
+
+        if [ $CPG_PILEUP_EXIT_CODE -ne 0 ]; then
+          echo "CpG methylation analysis failed with exit code $CPG_PILEUP_EXIT_CODE"
+          handle_miniwdl_failure $CPG_PILEUP_EXIT_CODE
+        fi
+
+        echo "CpG methylation analysis completed successfully"
+        
+        # Copy output of cpg_pileup to output folder
+        bash "$TASK_DIR/process-outputs.sh" "$output_folder" "${sample_id}" 
+        
+        # Copy udocker cache to output folder
+        if [ "$cache_udocker_images" = true ] && [ ! -d "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}" ]; then
+          echo "Copying udocker cache to resources folder..."
+          mkdir -p "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}"
+          cp -r /scratch/.udocker/layers /scratch/.udocker/repos "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}" 2>/dev/null || true
+        fi
+
+        echo "*************************"
+        echo "Secondary analysis statistics completed successfully"
+        echo "Output files copied to: $output_folder"
+        echo "*************************"

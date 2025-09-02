@@ -1,0 +1,377 @@
+name: PacBio WGS Singleton
+description: Run PacBio WGS analysis on a single sample.
+stages:
+  - name: pbmm2 Alignment
+    description: Align PacBio HiFi reads to a reference genome using pbmm2 aligner.
+    task_path: tasks/pbmm2.task.yaml
+    depends_on: []
+
+    glob_parameter:
+      label: uBAM Base Folder
+      path:
+        type: directory
+        supports_location_mode: 'read_only'
+      glob_ex: '**/*.*.bam'
+      output_parameters:
+        - task_parameter_name: sample_id
+          expression: '${2}'
+        - task_parameter_name: bam
+          expression: '${0}'
+      help: "The folder containing the uBAM file(s) to align. \nThe number of samples (and therefore the number of runs) is determined by the number of files matching the glob expression. \nSee the glob expression help section for help with writing glob expressions to match your data."
+
+    task_parameters:
+      - name: output_folder
+        label: Output Folder
+        type: directory
+        supports_location_mode: 'no_append'
+
+      - name: cache_udocker_images
+        label: Cache Udocker Image
+        type: boolean
+        value: true
+        
+  - name: DeepVariant
+    description: Call variants from PacBio HiFi reads using DeepVariant.
+    task_path: tasks/deepvariant.task.yaml
+    depends_on:
+      - pbmm2 Alignment
+
+    glob_parameter:
+      label: Alignment Folder
+      path: 
+        type: stage
+        stage: pbmm2 Alignment
+        parameter: output_folder
+      glob_ex: '**/*.aligned.bam'
+      output_parameters:
+        - task_parameter_name: aligned_bam
+          expression: '${0}'
+        - task_parameter_name: sample_id
+          expression: '${2}'
+
+    task_parameters:
+      - name: output_folder
+        label: Output Folder
+        type: stage
+        stage: pbmm2 Alignment
+        stage_parameter_expression: "${output_folder}"
+      
+      - name: cache_udocker_images
+        label: Cache Udocker Image
+        type: stage
+        stage: pbmm2 Alignment
+        stage_parameter_expression: "${cache_udocker_images}"
+
+  - name: mosdepth
+    description: Calculate depth of coverage for BAM.
+    task_path: tasks/mosdepth.task.yaml
+    depends_on:
+      - pbmm2 Alignment
+
+    glob_parameter:
+      label: Alignment Folder
+      path: 
+        type: stage
+        stage: pbmm2 Alignment
+        parameter: output_folder
+      glob_ex: '**/*.aligned.bam'
+      output_parameters:
+        - task_parameter_name: aligned_bam
+          expression: '${0}'
+        - task_parameter_name: sample_id
+          expression: '${2}'
+
+    task_parameters:
+      - name: output_folder
+        label: Output Folder
+        type: stage
+        stage: pbmm2 Alignment
+        stage_parameter_expression: "${output_folder}"
+
+      - name: cache_udocker_images
+        label: Cache Udocker Image
+        type: stage
+        stage: pbmm2 Alignment
+        stage_parameter_expression: "${cache_udocker_images}"
+
+      - name: infer_sex
+        label: Infer Sex?
+        type: boolean
+        value: true
+
+  - name: Sawfish
+    description: Discover and call structural variants with Sawfish.
+    task_path: tasks/sawfish.task.yaml
+    depends_on:
+      - DeepVariant
+      - mosdepth
+
+    glob_parameter:
+      label: Alignment Folder
+      path: 
+        type: stage
+        stage: pbmm2 Alignment
+        parameter: output_folder
+      glob_ex: '**/*.aligned.bam'
+      output_parameters:
+        - task_parameter_name: aligned_bam
+          expression: '${0}'
+        - task_parameter_name: sample_id
+          expression: '${2}'
+
+    task_parameters:
+      - name: output_folder
+        label: Output Folder
+        type: stage
+        stage: pbmm2 Alignment
+        stage_parameter_expression: "${output_folder}"
+
+      - name: cache_udocker_images
+        label: Cache Udocker Image
+        type: stage
+        stage: pbmm2 Alignment
+        stage_parameter_expression: "${cache_udocker_images}"
+
+  - name: TRGT
+    description: Genotype tandem repeats from aligned reads using TRGT.
+    task_path: tasks/trgt.task.yaml
+    depends_on:
+      - pbmm2 Alignment
+      - mosdepth
+
+    glob_parameter:
+      label: Alignment Folder
+      path: 
+        type: stage
+        stage: pbmm2 Alignment
+        parameter: output_folder
+      glob_ex: '**/*.aligned.bam'
+      output_parameters:
+        - task_parameter_name: aligned_bam
+          expression: '${0}'
+        - task_parameter_name: sample_id
+          expression: '${2}'
+
+    task_parameters:
+      - name: output_folder
+        label: Output Folder
+        type: stage
+        stage: pbmm2 Alignment
+        stage_parameter_expression: "${output_folder}"
+
+      - name: cache_udocker_images
+        label: Cache Udocker Image
+        type: stage
+        stage: pbmm2 Alignment
+        stage_parameter_expression: "${cache_udocker_images}"
+
+  - name: Paraphase
+    description: Haplotype genes in hard to align regions using Paraphase.
+    task_path: tasks/paraphase.task.yaml
+    depends_on:
+      - pbmm2 Alignment
+
+    glob_parameter:
+      label: Alignment Folder
+      path: 
+        type: stage
+        stage: pbmm2 Alignment
+        parameter: output_folder
+      glob_ex: '**/*.aligned.bam'
+      output_parameters:
+        - task_parameter_name: aligned_bam
+          expression: '${0}'
+        - task_parameter_name: sample_id
+          expression: '${2}'
+
+    task_parameters:
+      - name: output_folder
+        label: Output Folder
+        type: stage
+        stage: pbmm2 Alignment
+        stage_parameter_expression: "${output_folder}"
+
+      - name: cache_udocker_images
+        label: Cache Udocker Image
+        type: stage
+        stage: pbmm2 Alignment
+        stage_parameter_expression: "${cache_udocker_images}"
+
+  - name: Mitorsaw
+    description: Identify and quantify mitochondrial variants and haplotypes from aligned BAM files using Mitorsaw.
+    task_path: tasks/mitorsaw.task.yaml
+    depends_on:
+      - pbmm2 Alignment
+      - mosdepth
+
+    glob_parameter:
+      label: Alignment Folder
+      path: 
+        type: stage
+        stage: pbmm2 Alignment
+        parameter: output_folder
+      glob_ex: '**/*.aligned.bam'
+      output_parameters:
+        - task_parameter_name: aligned_bam
+          expression: '${0}'
+        - task_parameter_name: sample_id
+          expression: '${2}'
+
+    task_parameters:
+      - name: output_folder
+        label: Output Folder
+        type: stage
+        stage: pbmm2 Alignment
+        stage_parameter_expression: "${output_folder}"
+
+      - name: cache_udocker_images
+        label: Cache Udocker Image
+        type: stage
+        stage: pbmm2 Alignment
+        stage_parameter_expression: "${cache_udocker_images}"
+
+  - name: HiPhase
+    description: Phase VCFs and haplotag BAMs with HiPhase.
+    task_path: tasks/hiphase.task.yaml
+    depends_on:
+      - DeepVariant
+      - Sawfish
+      - TRGT
+      
+    glob_parameter:
+      label: Alignment Folder
+      path: 
+        type: stage
+        stage: DeepVariant
+        parameter: output_folder
+      glob_ex: '**/*.aligned.bam'
+      output_parameters:
+        - task_parameter_name: aligned_bam
+          expression: '${0}'
+        - task_parameter_name: sample_id
+          expression: '${2}'
+
+    task_parameters:
+      - name: output_folder
+        label: Output Folder
+        type: stage
+        stage: pbmm2 Alignment
+        stage_parameter_expression: "${output_folder}"
+
+  - name: Secondary Analysis Stats
+    description: Generate secondary analysis statistics.
+    task_path: tasks/stats.task.yaml
+    depends_on:
+      - HiPhase
+
+    glob_parameter:
+      label: Alignment Folder
+      path:
+        type: stage
+        stage: HiPhase
+        parameter: output_folder
+      glob_ex: '**/*.haplotagged.bam'
+      output_parameters:
+        - task_parameter_name: haplotagged_bam
+          expression: '${0}'
+        - task_parameter_name: sample_id
+          expression: '${2}'
+
+    task_parameters:
+      - name: output_folder
+        label: Output Folder
+        type: stage
+        stage: HiPhase
+        stage_parameter_expression: "${output_folder}"
+
+      - name: cache_udocker_images
+        label: Cache Udocker Image
+        type: stage
+        stage: pbmm2 Alignment
+        stage_parameter_expression: "${cache_udocker_images}"
+
+  - name: PBStarPhase
+    description: Run PBStarPhase to generate diplotype calls and PharmCAT TSV output.
+    task_path: tasks/pbstarphase.task.yaml
+    depends_on:
+      - HiPhase
+
+    glob_parameter:
+      label: Alignment Folder
+      path:
+        type: stage
+        stage: HiPhase
+        parameter: output_folder
+      glob_ex: '**/*.haplotagged.bam'
+      output_parameters:
+        - task_parameter_name: haplotagged_bam
+          expression: '${0}'
+        - task_parameter_name: sample_id
+          expression: '${2}'
+
+    task_parameters:
+      - name: output_folder
+        label: Output Folder
+        type: stage
+        stage: HiPhase
+        stage_parameter_expression: "${output_folder}"
+        
+      - name: cache_udocker_images
+        label: Cache Udocker Image
+        type: stage
+        stage: pbmm2 Alignment
+        stage_parameter_expression: "${cache_udocker_images}"
+
+  - name: Upload PGx Results
+    description: Upload PacBio PGx Results to Sample Catalog
+    task_path: tasks/upload_pgx_results.task.yaml
+    depends_on:
+      - PBStarPhase
+
+    glob_parameter:
+      label: Analysis Folder
+      path:
+        type: stage
+        stage: PBStarPhase
+        parameter: output_folder
+      glob_ex: '**/*.pharmcat.tsv'
+      output_parameters:
+        - task_parameter_name: pharmcat_tsv
+          expression: '${0}'
+        - task_parameter_name: sample_name
+          expression: '${2}'
+  
+  - name: VSPipeline
+    description: Create a project with called variants
+    run_step: optional_default_skip
+    task_path: tasks/vspipeline.task.yaml
+    depends_on:
+      - HiPhase
+      - Upload PGx Results
+
+    task_parameters:
+      - name: base_path
+        label: Input Folder
+        type: stage
+        stage: pbmm2 Alignment
+        stage_parameter_expression: "${output_folder}"
+
+      - name: project_name
+        label: Project Name
+        type: string
+        optional: true
+        help: "The name of the VarSeq project to create. If not provided, the project name will be derived from the sample name derived from the glob expression."
+
+      - name: project_template
+        label: VarSeq Project Template
+        type: file
+        supports_location_mode: 'read_only'
+        help: "The template to use for the VarSeq project."
+        path: AppData/VarSeq/User Data/ProjectTemplates/
+        value: AppData/VarSeq/User Data/ProjectTemplates/PacBio_WDL.vsproject-template
+
+      - name: overwrite_project
+        label: Overwrite Existing VarSeq Projects
+        type: boolean
+        value: "true"
+        help: "If enabled, existing VarSeq projects with the same name will be overwritten."

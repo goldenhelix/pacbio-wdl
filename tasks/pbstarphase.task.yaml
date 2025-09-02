@@ -1,0 +1,215 @@
+name: PBStarPhase
+description: "Run PBStarPhase to generate diplotype calls and PharmCAT TSV output."
+
+agent_requirements:
+  cpu_cores: 16
+  memory_gb: 32
+
+parameters:
+  - name: sample_id
+    label: "Sample ID"
+    type: string
+    description: "Sample ID"
+
+  - name: haplotagged_bam
+    label: "Haplotagged BAM"
+    type: file
+    pattern_match:
+      - "*.bam"
+    description: "Haplotagged BAM file from hiphase step"
+
+  - name: output_folder
+    label: "Output Folder"
+    type: directory
+    supports_location_mode: "no_append"
+
+  - name: cache_udocker_images
+    label: "Cache Udocker Images"
+    type: boolean
+    value: true
+
+steps:
+  - name: pbstarphase
+    type: cmd
+    description: "Run PBStarPhase to generate diplotype calls and PharmCAT TSV output"
+    args:
+      - |- # shell
+        set -eu pipefail
+
+        # Set up resource path
+        PB_RESOURCES_DIR="${WORKSPACE_DIR}/${RESOURCES_PATH}/hifi-wdl-resources-v3.0.0"
+        # TASK_NAME=$(basename "$(dirname "$(dirname "$(dirname "$(dirname "$PWD")")")")")
+
+        # Function to handle miniwdl failure
+        handle_miniwdl_failure() {
+          local exit_code=$1
+          echo "MiniWDL run failed with exit code $exit_code"
+          echo "Capturing debug information..."
+          bash "$TASK_DIR/miniwdl-debug-capture.sh" /scratch/_LAST "$output_folder" "$TASK_NAME"
+          exit $exit_code
+        }
+
+        # Set environment variables for miniwdl
+        export MINIWDL__SCHEDULER__CONTAINER_BACKEND=udocker
+        export MINIWDL__FILE_IO__ALLOW_ANY_INPUT=true
+        export MINIWDL__SCHEDULER__TASK_CONCURRENCY=8
+        export UDOCKER_DIR=/scratch/.udocker
+        
+        # Set up reference files (hardcoded from ref_map)
+        REF_FASTA="${PB_RESOURCES_DIR}/GRCh38/human_GRCh38_no_alt_analysis_set.fasta"
+        REF_INDEX="${PB_RESOURCES_DIR}/GRCh38/human_GRCh38_no_alt_analysis_set.fasta.fai"
+
+        # Find index files
+        haplotagged_bam_index="${haplotagged_bam}.bai"
+
+        # Infer VCF files from upstream tasks
+        # Small variant VCF from DeepVariant
+        small_variant_vcf=$(echo "${haplotagged_bam}" | cut -d '.' -f 1).small_variants.phased.vcf.gz
+        small_variant_vcf_index="${small_variant_vcf}.tbi"
+        
+        # SV VCF from Sawfish
+        sv_vcf=$(echo "${haplotagged_bam}" | cut -d '.' -f 1).structural_variants.phased.vcf.gz
+        sv_vcf_index="${sv_vcf}.tbi"
+
+        # Verify reference files exist
+        if [ ! -f "$REF_FASTA" ]; then
+          echo "Error: Reference FASTA file not found at $REF_FASTA"
+          echo "Please ensure the PacBio WDL resources have been downloaded using the Download PacBio Reference Data Resources task"
+          exit 1
+        fi
+
+        if [ ! -f "$REF_INDEX" ]; then
+          echo "Error: Reference FASTA index file not found at $REF_INDEX"
+          echo "Please ensure the PacBio WDL resources have been downloaded using the Download PacBio Reference Data Resources task"
+          exit 1
+        fi
+        
+        # Pull udocker layers from cache if requested
+        if [ -d "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}" ]; then
+          echo "Pulling udocker image from cache..."
+          mkdir -p /scratch/.udocker
+          cp -R "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}"/* /scratch/.udocker/
+        fi
+        
+        # Check for required input files
+        if [ ! -f "$haplotagged_bam" ]; then
+          echo "Error: Haplotagged BAM file not found at $haplotagged_bam"
+          exit 1
+        fi
+
+        # Check that inferred index files exist
+        if [ ! -f "$haplotagged_bam_index" ]; then
+          echo "Error: Haplotagged BAM index file not found at $haplotagged_bam_index"
+          exit 1
+        fi
+
+        # Check for VCF files
+        if [ ! -f "$small_variant_vcf" ]; then
+          echo "Error: Small variant VCF file not found at $small_variant_vcf"
+          echo "Please ensure DeepVariant has been run on this sample"
+          exit 1
+        fi
+        
+        if [ ! -f "$small_variant_vcf_index" ]; then
+          echo "Error: Small variant VCF index file not found at $small_variant_vcf_index"
+          exit 1
+        fi
+        
+        if [ ! -f "$sv_vcf" ]; then
+          echo "Error: Structural variant VCF file not found at $sv_vcf"
+          echo "Please ensure Sawfish has been run on this sample"
+          exit 1
+        fi
+        
+        if [ ! -f "$sv_vcf_index" ]; then
+          echo "Error: Structural variant VCF index file not found at $sv_vcf_index"
+          exit 1
+        fi
+
+        # Copy input files to /scratch
+        echo "Copying input files to /scratch..."
+        cp "$haplotagged_bam" /scratch/
+        cp "$haplotagged_bam_index" /scratch/
+        cp "$small_variant_vcf" /scratch/
+        cp "$small_variant_vcf_index" /scratch/
+        cp "$sv_vcf" /scratch/
+        cp "$sv_vcf_index" /scratch/
+        
+        # Copy reference files to /scratch
+        echo "Copying reference files to /scratch..."
+        cp "$REF_FASTA" /scratch/
+        cp "$REF_INDEX" /scratch/
+        
+        # Set local file paths
+        LOCAL_BAM="/scratch/$(basename "${haplotagged_bam}")"
+        LOCAL_BAM_INDEX="/scratch/$(basename "${haplotagged_bam_index}")"
+        LOCAL_SMALL_VARIANT_VCF="/scratch/$(basename "${small_variant_vcf}")"
+        LOCAL_STRUCTURAL_VARIANT_VCF="/scratch/$(basename "${sv_vcf}")"
+        LOCAL_REF_FASTA="/scratch/$(basename "$REF_FASTA")"
+        LOCAL_REF_INDEX="/scratch/$(basename "$REF_INDEX")"
+
+        echo "*************************"
+        echo "Starting PBStarPhase analysis for $sample_id"
+        echo "*************************"
+
+        # Create JSON structure for pbstarphase_diplotype inputs
+        cat > /scratch/pbstarphase_inputs.json << EOF
+        {
+          "pbstarphase_diplotype.sample_id": "$sample_id",
+          "pbstarphase_diplotype.phased_small_variant_vcf": "$LOCAL_SMALL_VARIANT_VCF",
+          "pbstarphase_diplotype.phased_small_variant_vcf_index": "$LOCAL_SMALL_VARIANT_VCF.tbi",
+          "pbstarphase_diplotype.phased_structural_variant_vcf": "$LOCAL_STRUCTURAL_VARIANT_VCF",
+          "pbstarphase_diplotype.phased_structural_variant_vcf_index": "$LOCAL_STRUCTURAL_VARIANT_VCF.tbi",
+          "pbstarphase_diplotype.aligned_bam": "$LOCAL_BAM",
+          "pbstarphase_diplotype.aligned_bam_index": "$LOCAL_BAM_INDEX",
+          "pbstarphase_diplotype.ref_fasta": "$LOCAL_REF_FASTA",
+          "pbstarphase_diplotype.ref_index": "$LOCAL_REF_INDEX",
+          "pbstarphase_diplotype.runtime_attributes": {
+            "backend": "HPC",
+            "preemptible_tries": 0,
+            "max_retries": 1,
+            "zones": "",
+            "cpuPlatform": "",
+            "gpuType": "",
+            "container_registry": "quay.io/pacbio"
+          }
+        }
+        EOF
+        cat /scratch/pbstarphase_inputs.json
+
+        # Run pbstarphase_diplotype with miniwdl
+        echo "Running PBStarPhase..."
+        set +e
+        miniwdl run \
+          --task pbstarphase_diplotype \
+          "${TASK_DIR}/wdl/wdl-common/wdl/tasks/pbstarphase.wdl" \
+          --dir /scratch \
+          --runtime-cpu-max=$AGENT_CPU_CORES \
+          --runtime-memory-max=${AGENT_MEMORY_GB}G \
+          -i /scratch/pbstarphase_inputs.json
+        PBSTARPHASE_EXIT_CODE=$?
+        set -e
+
+        if [ $PBSTARPHASE_EXIT_CODE -ne 0 ]; then
+          echo "PBStarPhase failed with exit code $PBSTARPHASE_EXIT_CODE"
+          handle_miniwdl_failure $PBSTARPHASE_EXIT_CODE
+        fi
+
+        echo "PBStarPhase completed successfully"
+        
+        # Copy output files to output folder
+        bash "$TASK_DIR/process-outputs.sh" "$output_folder" "${sample_id}" 
+        
+        # Copy udocker cache to output folder
+        if [ "$cache_udocker_images" = true ] && [ ! -d "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}" ]; then
+          echo "Copying udocker cache to resources folder..."
+          mkdir -p "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}"
+          cp -r /scratch/.udocker/layers /scratch/.udocker/repos "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}" 2>/dev/null || true
+        fi
+
+        echo "*************************"
+        echo "PBStarPhase analysis completed successfully"
+        echo "Output files copied to: $output_folder"
+        echo "*************************"
+        
+        

@@ -1,0 +1,162 @@
+name: Paraphase
+description: "Haplotype genes in hard to align regions using Paraphase."
+
+agent_requirements:
+  cpu_cores: 16
+  memory_gb: 64
+
+parameters:
+  - name: sample_id
+    label: Sample ID
+    type: string
+    description: "Sample ID"
+    
+  - name: aligned_bam
+    label: Aligned BAM
+    type: file
+    pattern_match:
+      - "*.bam"
+    description: "Aligned BAM file"
+    
+  - name: output_folder
+    label: Output Folder
+    type: directory
+    supports_location_mode: 'no_append'
+    
+  - name: cache_udocker_images
+    label: Cache Udocker Image
+    type: boolean
+    value: true
+
+steps:
+  - name: paraphase
+    type: cmd
+    description: "Haplotype genes in hard to align regions using Paraphase."
+    args:
+      - |- # shell
+        set -eu pipefail
+
+        # Set up resource path
+        PB_RESOURCES_DIR="${WORKSPACE_DIR}/${RESOURCES_PATH}/hifi-wdl-resources-v3.0.0"
+        # TASK_NAME=$(basename "$(dirname "$(dirname "$(dirname "$(dirname "$PWD")")")")")
+
+        # Function to handle miniwdl failure
+        handle_miniwdl_failure() {
+          local exit_code=$1
+          echo "MiniWDL run failed with exit code $exit_code"
+          echo "Capturing debug information..."
+          bash "$TASK_DIR/miniwdl-debug-capture.sh" /scratch/_LAST "$output_folder" "$TASK_NAME"
+          exit $exit_code
+        }
+
+        # Set environment variables for miniwdl
+        export MINIWDL__SCHEDULER__CONTAINER_BACKEND=udocker
+        export MINIWDL__FILE_IO__ALLOW_ANY_INPUT=true
+        export MINIWDL__SCHEDULER__TASK_CONCURRENCY=8
+        export UDOCKER_DIR=/scratch/.udocker
+        
+        # Set up reference files (hardcoded from ref_map)
+        REF_FASTA="${PB_RESOURCES_DIR}/GRCh38/human_GRCh38_no_alt_analysis_set.fasta"
+        REF_INDEX="${PB_RESOURCES_DIR}/GRCh38/human_GRCh38_no_alt_analysis_set.fasta.fai"
+
+        # Find index files
+        aligned_bam_index="${aligned_bam}.bai"
+
+        # Verify reference files exist
+        if [ ! -f "$REF_FASTA" ]; then
+          echo "Error: Reference FASTA file not found at $REF_FASTA"
+          echo "Please ensure the PacBio WDL resources have been downloaded using the Download PacBio Reference Data Resources task"
+          exit 1
+        fi
+
+        if [ ! -f "$REF_INDEX" ]; then
+          echo "Error: Reference FASTA index file not found at $REF_INDEX"
+          echo "Please ensure the PacBio WDL resources have been downloaded using the Download PacBio Reference Data Resources task"
+          exit 1
+        fi
+        
+        # Pull udocker layers from cache if requested
+        if [ -d "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}" ]; then
+          echo "Pulling udocker image from cache..."
+          mkdir -p /scratch/.udocker
+          cp -R "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}"/* /scratch/.udocker/
+        fi
+        
+        # Check for required input files
+        if [ ! -f "$aligned_bam" ]; then
+          echo "Error: Aligned BAM file not found at $aligned_bam"
+          exit 1
+        fi
+        
+        if [ ! -f "$aligned_bam_index" ]; then
+          echo "Error: BAM index file not found at $aligned_bam_index"
+          exit 1
+        fi
+
+        # Copy input files to /scratch
+        echo "Copying input files to /scratch..."
+        cp "${aligned_bam}" /scratch/
+        cp "$aligned_bam_index" /scratch/
+        
+        # Copy reference files to /scratch
+        echo "Copying reference files to /scratch..."
+        cp "$REF_FASTA" /scratch/
+        cp "$REF_INDEX" /scratch/
+        
+        # Set local file paths
+        LOCAL_BAM="/scratch/$(basename "${aligned_bam}")"
+        LOCAL_BAM_INDEX="/scratch/$(basename "${aligned_bam_index}")"
+        LOCAL_REF_FASTA="/scratch/$(basename "$REF_FASTA")"
+        LOCAL_REF_INDEX="/scratch/$(basename "$REF_INDEX")"
+
+        # Create JSON structure for paraphase inputs
+        cat > /scratch/paraphase_inputs.json << EOF
+        {
+          "paraphase.sample_id": "$sample_id",
+          "paraphase.aligned_bam": "$LOCAL_BAM",
+          "paraphase.aligned_bam_index": "$LOCAL_BAM_INDEX",
+          "paraphase.ref_fasta": "$LOCAL_REF_FASTA",
+          "paraphase.ref_index": "$LOCAL_REF_INDEX",
+          "paraphase.runtime_attributes": {
+            "backend": "HPC",
+            "preemptible_tries": 0,
+            "max_retries": 1,
+            "zones": "",
+            "cpuPlatform": "",
+            "gpuType": "",
+            "container_registry": "quay.io/pacbio"
+          }
+        }
+        EOF
+        cat /scratch/paraphase_inputs.json
+
+        # Run paraphase with miniwdl
+        echo "Running Paraphase..."
+        set +e
+        miniwdl run \
+          --task paraphase \
+          "${TASK_DIR}/wdl/wdl-common/wdl/tasks/paraphase.wdl" \
+          --dir /scratch \
+          --runtime-cpu-max=$AGENT_CPU_CORES \
+          --runtime-memory-max=${AGENT_MEMORY_GB}G \
+          -i /scratch/paraphase_inputs.json
+        PARAPHASE_EXIT_CODE=$?
+        set -e
+
+        if [ $PARAPHASE_EXIT_CODE -ne 0 ]; then
+          echo "Paraphase failed with exit code $PARAPHASE_EXIT_CODE"
+          handle_miniwdl_failure $PARAPHASE_EXIT_CODE
+        fi
+
+        echo "Paraphase completed successfully"
+        bash "$TASK_DIR/process-outputs.sh" "$output_folder" "${sample_id}" 
+        
+        # Copy udocker cache to output folder
+        if [ "$cache_udocker_images" = true ] && [ ! -d "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}" ]; then
+          echo "Copying udocker cache to resources folder..."
+          mkdir -p "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}"
+          cp -r /scratch/.udocker/layers /scratch/.udocker/repos "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}" 2>/dev/null || true
+        fi
+
+        echo "Paraphase gene haplotyping completed successfully"
+        echo "Output files copied to: $output_folder"

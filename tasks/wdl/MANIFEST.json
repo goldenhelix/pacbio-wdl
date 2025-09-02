@@ -1,0 +1,8 @@
+{
+  "mainWorkflowURL": "family.wdl",
+  "meta": {
+    "miniwdl": {
+      "version": "v1.12.1"
+    }
+  }
+}

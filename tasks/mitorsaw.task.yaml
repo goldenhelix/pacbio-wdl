@@ -1,0 +1,222 @@
+name: Mitorsaw
+description: "Identify and quantify mitochondrial variants and haplotypes from aligned BAM files using Mitorsaw."
+auto_generate_session_for_account: "{workspaceBot}"
+
+agent_requirements:
+  cpu_cores: 32
+  memory_gb: 64
+
+parameters:
+  - name: sample_id
+    label: Sample ID
+    type: string
+    description: "Sample ID"
+    
+  - name: aligned_bam
+    label: Aligned BAM
+    type: file
+    pattern_match:
+      - "*.bam"
+    description: "Aligned BAM file"
+    
+  - name: output_folder
+    label: Output Folder
+    type: directory
+    supports_location_mode: 'no_append'
+    
+  - name: cache_udocker_images
+    label: Cache Udocker Image
+    type: boolean
+    value: true
+
+steps:
+  - name: mitorsaw
+    type: cmd
+    description: "Identify and quantify mitochondrial variants and haplotypes from aligned BAM files using Mitorsaw."
+    args:
+      - |- # shell
+        set -eu pipefail
+
+        # Set up resource path
+        PB_RESOURCES_DIR="${WORKSPACE_DIR}/${RESOURCES_PATH}/hifi-wdl-resources-v3.0.0"
+        # TASK_NAME=$(basename "$(dirname "$(dirname "$(dirname "$(dirname "$PWD")")")")")
+        
+        # Ensure TASK_NAME is set for debug capture
+        if [ -z "${TASK_NAME:-}" ]; then
+          TASK_NAME="mitorsaw"
+          echo "Warning: TASK_NAME not set, using default: $TASK_NAME"
+        fi
+
+        # Get sample sex from catalog
+        echo "Looking up sample sex for: $sample_id"
+        set +e
+        sex=$(gautil client catalog-export SampleCatalog Sample:eq:"$sample_id" --fields="Sex" | tail -n 1 | tr -d '\r\n\t ')
+        sex_lookup_exit_code=$?
+        set -e
+        
+        if [ $sex_lookup_exit_code -ne 0 ] || [ -z "$sex" ] || [ "$sex" != "Male" ] && [ "$sex" != "Female" ]; then
+          echo "Warning: Could not determine sex for sample $sample_id (exit code: $sex_lookup_exit_code, value: '$sex'), defaulting to Female"
+          sex="Female"
+        fi
+        
+        # Convert to uppercase for consistency with existing logic
+        if [ "$sex" = "Male" ]; then
+          sex="MALE"
+        elif [ "$sex" = "Female" ]; then
+          sex="FEMALE"
+        fi
+
+        # Function to handle miniwdl failure
+        handle_miniwdl_failure() {
+          local exit_code=$1
+          echo "MiniWDL run failed with exit code $exit_code"
+          echo "Capturing debug information..."
+          bash "$TASK_DIR/miniwdl-debug-capture.sh" /scratch/_LAST "$output_folder" "$TASK_NAME"
+          exit $exit_code
+        }
+
+        # Set environment variables for miniwdl
+        export MINIWDL__SCHEDULER__CONTAINER_BACKEND=udocker
+        export MINIWDL__FILE_IO__ALLOW_ANY_INPUT=true
+        export MINIWDL__SCHEDULER__TASK_CONCURRENCY=8
+        export UDOCKER_DIR=/scratch/.udocker
+        
+        # Set up reference files (hardcoded from ref_map)
+        REF_FASTA="${PB_RESOURCES_DIR}/GRCh38/human_GRCh38_no_alt_analysis_set.fasta"
+        REF_INDEX="${PB_RESOURCES_DIR}/GRCh38/human_GRCh38_no_alt_analysis_set.fasta.fai"
+
+        # Find index files
+        aligned_bam_index="${aligned_bam}.bai"
+
+        # Verify reference files exist
+        if [ ! -f "$REF_FASTA" ]; then
+          echo "Error: Reference FASTA file not found at $REF_FASTA"
+          echo "Please ensure the PacBio WDL resources have been downloaded using the Download PacBio Reference Data Resources task"
+          exit 1
+        fi
+
+        if [ ! -f "$REF_INDEX" ]; then
+          echo "Error: Reference FASTA index file not found at $REF_INDEX"
+          echo "Please ensure the PacBio WDL resources have been downloaded using the Download PacBio Reference Data Resources task"
+          exit 1
+        fi
+        
+        # Pull udocker layers from cache if requested
+        if [ -d "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}" ]; then
+          echo "Pulling udocker image from cache..."
+          mkdir -p /scratch/.udocker
+          cp -R "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}"/* /scratch/.udocker/
+        fi
+        
+        # Check for required input files
+        if [ ! -f "$aligned_bam" ]; then
+          echo "Error: Aligned BAM file not found at $aligned_bam"
+          exit 1
+        fi
+        
+        if [ ! -f "$aligned_bam_index" ]; then
+          echo "Error: BAM index file not found at $aligned_bam_index"
+          exit 1
+        fi
+
+        # Copy input files to /scratch
+        echo "Copying input files to /scratch..."
+        cp "${aligned_bam}" /scratch/
+        cp "$aligned_bam_index" /scratch/
+        
+        # Copy reference files to /scratch
+        echo "Copying reference files to /scratch..."
+        cp "$REF_FASTA" /scratch/
+        cp "$REF_INDEX" /scratch/
+        
+        # Set local file paths
+        LOCAL_BAM="/scratch/$(basename "${aligned_bam}")"
+        LOCAL_BAM_INDEX="/scratch/$(basename "${aligned_bam_index}")"
+        LOCAL_REF_FASTA="/scratch/$(basename "$REF_FASTA")"
+        LOCAL_REF_INDEX="/scratch/$(basename "$REF_INDEX")"
+
+        # Create JSON structure for mitorsaw inputs
+        cat > /scratch/mitorsaw_inputs.json << EOF
+        {
+          "mitorsaw.aligned_bam": "$LOCAL_BAM",
+          "mitorsaw.aligned_bam_index": "$LOCAL_BAM_INDEX",
+          "mitorsaw.ref_fasta": "$LOCAL_REF_FASTA",
+          "mitorsaw.ref_index": "$LOCAL_REF_INDEX",
+          "mitorsaw.out_prefix": "${sample_id}",
+          "mitorsaw.runtime_attributes": {
+            "backend": "HPC",
+            "preemptible_tries": 0,
+            "max_retries": 1,
+            "zones": "",
+            "cpuPlatform": "",
+            "gpuType": "",
+            "container_registry": "quay.io/pacbio"
+          }
+        }
+        EOF
+        cat /scratch/mitorsaw_inputs.json
+
+        # Run mitorsaw with miniwdl
+        echo "Running Mitorsaw..."
+        set +e
+        miniwdl run \
+          --task mitorsaw \
+          "${TASK_DIR}/wdl/wdl-common/wdl/tasks/mitorsaw.wdl" \
+          --dir /scratch \
+          --runtime-cpu-max=$AGENT_CPU_CORES \
+          --runtime-memory-max=${AGENT_MEMORY_GB}G \
+          -i /scratch/mitorsaw_inputs.json
+        MITORSAW_EXIT_CODE=$?
+        set -e
+
+        if [ $MITORSAW_EXIT_CODE -ne 0 ]; then
+          echo "Mitorsaw failed with exit code $MITORSAW_EXIT_CODE"
+          handle_miniwdl_failure $MITORSAW_EXIT_CODE
+        fi
+
+        echo "Mitorsaw completed successfully"
+        
+        # Create intermediate output directory
+        INTERMEDIATE_OUTPUT="/scratch/intermediate_output"
+        mkdir -p "$INTERMEDIATE_OUTPUT"
+        
+        # Copy outputs to intermediate directory
+        echo "Copying outputs to intermediate directory..."
+        bash "$TASK_DIR/process-outputs.sh" "$INTERMEDIATE_OUTPUT" "${sample_id}" 
+        
+        # Process VCF file to replace TEST_SAMPLE_NAME with actual sample_id
+        echo "Processing VCF file to replace sample name..."
+        cd "$INTERMEDIATE_OUTPUT"
+        
+        # Find the VCF file
+        VCF_FILE=$(ls *.vcf.gz | head -1)
+        VCF_BASE=$(basename "$VCF_FILE" .vcf.gz)
+        
+        # Remove the .tbi file
+        rm -f "${VCF_BASE}.vcf.gz.tbi"
+        
+        # Unzip the VCF
+        gunzip "$VCF_FILE"
+        
+        # Replace TEST_SAMPLE_NAME with actual sample_id in the #CHROM line
+        sed -i "s/TEST_SAMPLE_NAME/$sample_id/g" "${VCF_BASE}.vcf"
+        
+        # Recompress and index the VCF
+        bgzip "${VCF_BASE}.vcf"
+        tabix -p vcf "${VCF_BASE}.vcf.gz"
+
+        # Copy processed files to final output folder
+        echo "Copying processed files to output folder..."
+        cp *.json "$output_folder/"
+        cp *.vcf.gz "$output_folder/"
+        cp *.vcf.gz.tbi "$output_folder/"
+        
+        # Copy udocker cache to output folder
+        if [ "$cache_udocker_images" = true ] && [ ! -d "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}" ]; then
+          echo "Copying udocker cache to resources folder..."
+          mkdir -p "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}"
+          cp -r /scratch/.udocker/layers /scratch/.udocker/repos "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}" 2>/dev/null || true
+        fi
+
+        echo "Mitorsaw mitochondrial variant and haplotype analysis completed successfully"
+        echo "Output files copied to: $output_folder"

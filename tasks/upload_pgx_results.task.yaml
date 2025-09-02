@@ -1,0 +1,66 @@
+name: Upload PGx Results 
+description: Uploads the PacBio PGx Output to the Sample Catalog
+auto_generate_session_for_account: "{workspaceBot}"
+
+parameters:
+  - name: sample_name
+    label: Sample Name
+    type: string
+    optional: true
+
+  - name: pharmcat_tsv
+    label: Input PGx TSV File
+    type: file
+    supports_location_mode: 'read_only'
+    pattern_match:
+      - "*.pharmcat.tsv"
+    create: false
+    list: true
+
+agent_requirements:
+  cpu_cores: 4
+  memory_gb: 12
+
+steps:
+  - name: update_sample_catalog
+    description: Add PacBio PGx Output to Sample Catalog
+    type: cmd
+    docker:
+      image: ${VSPIPELINE_DOCKER_IMAGE}
+    args:
+      - |-
+        set -eu pipefail
+
+        export GOLDENHELIX_USERDATA=${WORKSPACE_DIR}/AppData
+
+        # Check if file exists
+        if [ ! -f "$pharmcat_tsv" ]; then
+            echo "Error: File '$pharmcat_tsv' not found!"
+            exit 1
+        fi
+
+        # Initialize empty string for pgx_genotypes
+        pgx_genotypes=""
+
+        # Read the file line by line, skip the header line
+        while IFS=$'\t' read -r gene diplotype; do
+            # Skip header line and empty lines
+            if [[ "$gene" == "#gene" ]] || [[ -z "$gene" ]]; then
+                continue
+            fi
+            
+            # Add comma separator if not the first entry
+            if [[ -n "$pgx_genotypes" ]]; then
+                pgx_genotypes="${pgx_genotypes},"
+            fi
+            
+            # Append gene and diplotype to the string
+            pgx_genotypes="${pgx_genotypes}${gene} ${diplotype}"
+            
+        done < "$pharmcat_tsv"
+          
+        echo "Uploading catalog data for sample: $sample_name"
+        echo "PGx Genotypes: $pgx_genotypes"
+        gautil client catalog-upsert SampleCatalog \
+            Sample="$sample_name" \
+            PGxGenotypes="$pgx_genotypes"

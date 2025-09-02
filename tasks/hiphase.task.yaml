@@ -1,0 +1,252 @@
+name: HiPhase
+description: "Phase VCFs and haplotag BAMs with HiPhase"
+auto_generate_session_for_account: "{workspaceBot}"
+
+agent_requirements:
+  cpu_cores: 16
+  memory_gb: 32
+
+parameters:
+  - name: sample_id
+    label: Sample ID
+    type: string
+    description: "Sample ID"
+    
+  - name: aligned_bam
+    label: Aligned BAM
+    type: file
+    pattern_match:
+      - "*.bam"
+    description: "Aligned BAM file"
+    
+  - name: output_folder
+    label: Output Folder
+    type: directory
+    supports_location_mode: 'no_append'
+
+steps:
+  - name: hiphase
+    type: cmd
+    description: "Phase VCFs and haplotag BAMs with HiPhase"
+    args:
+      - |- # shell
+        set -eu pipefail
+
+        # Set up resource path
+        PB_RESOURCES_DIR="${WORKSPACE_DIR}/${RESOURCES_PATH}/hifi-wdl-resources-v3.0.0"
+
+        # Set up reference files (hardcoded from ref_map)
+        REF_FASTA="${PB_RESOURCES_DIR}/GRCh38/human_GRCh38_no_alt_analysis_set.fasta"
+        REF_INDEX="${PB_RESOURCES_DIR}/GRCh38/human_GRCh38_no_alt_analysis_set.fasta.fai"
+        REF_NAME="GRCh38"
+
+        # Find index files
+        aligned_bam_index="${aligned_bam}.bai"
+
+        # Infer VCF files from upstream tasks
+        # Small variant VCF from DeepVariant
+        small_variant_vcf=$(echo "${aligned_bam}" | cut -d '.' -f 1).small_variants.vcf.gz
+        small_variant_vcf_index="${small_variant_vcf}.tbi"
+        
+        # SV VCF from Sawfish
+        sv_vcf=$(echo "${aligned_bam}" | cut -d '.' -f 1).structural_variants.vcf.gz
+        sv_vcf_index="${sv_vcf}.tbi"
+        
+        # TRGT VCF from TRGT
+        trgt_vcf=$(echo "${aligned_bam}" | cut -d '.' -f 1).trgt.sorted.vcf.gz
+        trgt_vcf_index="${trgt_vcf}.tbi"
+
+        # Verify reference files exist
+        if [ ! -f "$REF_FASTA" ]; then
+          echo "Error: Reference FASTA file not found at $REF_FASTA"
+          echo "Please ensure the PacBio WDL resources have been downloaded using the Download PacBio Reference Data Resources task"
+          exit 1
+        fi
+
+        if [ ! -f "$REF_INDEX" ]; then
+          echo "Error: Reference FASTA index file not found at $REF_INDEX"
+          echo "Please ensure the PacBio WDL resources have been downloaded using the Download PacBio Reference Data Resources task"
+          exit 1
+        fi
+        
+        # Check for required input files
+        if [ ! -f "$aligned_bam" ]; then
+          echo "Error: Aligned BAM file not found at $aligned_bam"
+          exit 1
+        fi
+        
+        if [ ! -f "$aligned_bam_index" ]; then
+          echo "Error: BAM index file not found at $aligned_bam_index"
+          exit 1
+        fi
+
+        # Check for VCF files
+        if [ ! -f "$small_variant_vcf" ]; then
+          echo "Error: Small variant VCF file not found at $small_variant_vcf"
+          echo "Please ensure DeepVariant has been run on this sample"
+          exit 1
+        fi
+        
+        if [ ! -f "$small_variant_vcf_index" ]; then
+          echo "Error: Small variant VCF index file not found at $small_variant_vcf_index"
+          exit 1
+        fi
+        
+        if [ ! -f "$sv_vcf" ]; then
+          echo "Error: Structural variant VCF file not found at $sv_vcf"
+          echo "Please ensure Sawfish has been run on this sample"
+          exit 1
+        fi
+        
+        if [ ! -f "$sv_vcf_index" ]; then
+          echo "Error: Structural variant VCF index file not found at $sv_vcf_index"
+          exit 1
+        fi
+        
+        if [ ! -f "$trgt_vcf" ]; then
+          echo "Error: TRGT VCF file not found at $trgt_vcf"
+          echo "Please ensure TRGT has been run on this sample"
+          exit 1
+        fi
+        
+        if [ ! -f "$trgt_vcf_index" ]; then
+          echo "Error: TRGT VCF index file not found at $trgt_vcf_index"
+          exit 1
+        fi
+
+        # Copy input files to /scratch
+        echo "Copying input files to /scratch..."
+        cp "${aligned_bam}" /scratch/
+        cp "$aligned_bam_index" /scratch/
+        cp "$small_variant_vcf" /scratch/
+        cp "$small_variant_vcf_index" /scratch/
+        cp "$sv_vcf" /scratch/
+        cp "$sv_vcf_index" /scratch/
+        cp "$trgt_vcf" /scratch/
+        cp "$trgt_vcf_index" /scratch/
+        
+        # Copy reference files to /scratch
+        echo "Copying reference files to /scratch..."
+        cp "$REF_FASTA" /scratch/
+        cp "$REF_INDEX" /scratch/
+        
+        # Set local file paths
+        LOCAL_BAM="/scratch/$(basename "${aligned_bam}")"
+        LOCAL_BAM_INDEX="/scratch/$(basename "${aligned_bam_index}")"
+        LOCAL_REF_FASTA="/scratch/$(basename "$REF_FASTA")"
+        LOCAL_REF_INDEX="/scratch/$(basename "$REF_INDEX")"
+        LOCAL_SMALL_VARIANT_VCF="/scratch/$(basename "${small_variant_vcf}")"
+        LOCAL_SMALL_VARIANT_VCF_INDEX="/scratch/$(basename "${small_variant_vcf_index}")"
+        LOCAL_SV_VCF="/scratch/$(basename "${sv_vcf}")"
+        LOCAL_SV_VCF_INDEX="/scratch/$(basename "${sv_vcf_index}")"
+        LOCAL_TRGT_VCF="/scratch/$(basename "${trgt_vcf}")"
+        LOCAL_TRGT_VCF_INDEX="/scratch/$(basename "${trgt_vcf_index}")"
+
+        # Generate phased VCF names (matching downstream.wdl line 83)
+        PHASED_SMALL_VARIANT_VCF_NAME="$(basename "${small_variant_vcf}" .vcf.gz).phased.vcf.gz"
+        PHASED_SV_VCF_NAME="$(basename "${sv_vcf}" .vcf.gz).phased.vcf.gz"
+        PHASED_TRGT_VCF_NAME="$(basename "${trgt_vcf}" .vcf.gz).phased.vcf.gz"
+        
+        # Generate phased VCF index names
+        PHASED_SMALL_VARIANT_VCF_INDEX_NAME="$(basename "${small_variant_vcf_index}" .vcf.gz.tbi).phased.vcf.gz.tbi"
+        PHASED_SV_VCF_INDEX_NAME="$(basename "${sv_vcf_index}" .vcf.gz.tbi).phased.vcf.gz.tbi"
+        PHASED_TRGT_VCF_INDEX_NAME="$(basename "${trgt_vcf_index}" .vcf.gz.tbi).phased.vcf.gz.tbi"
+
+
+        # Download and set up hiphase binary
+        echo "Downloading hiphase binary..."
+        cd /scratch
+        curl -L -O https://github.com/PacificBiosciences/HiPhase/releases/download/v1.5.0/hiphase-v1.5.0-x86_64-unknown-linux-gnu.tar.gz
+        tar -xzf hiphase-v1.5.0-x86_64-unknown-linux-gnu.tar.gz
+        HIPHASE_BIN="/scratch/hiphase-v1.5.0-x86_64-unknown-linux-gnu/hiphase"
+        chmod +x "$HIPHASE_BIN"
+        
+        # Verify hiphase binary
+        echo "Verifying hiphase binary..."
+        "$HIPHASE_BIN" --version
+        
+        # Run hiphase directly
+        echo "Running HiPhase..."
+        set +e
+        
+        # Call hiphase with multiple VCF inputs and outputs
+        "$HIPHASE_BIN" \
+          --threads $AGENT_CPU_CORES \
+          --sample-name "$sample_id" \
+          --vcf "$LOCAL_SMALL_VARIANT_VCF" \
+          --vcf "$LOCAL_SV_VCF" \
+          --vcf "$LOCAL_TRGT_VCF" \
+          --output-vcf "$PHASED_SMALL_VARIANT_VCF_NAME" \
+          --output-vcf "$PHASED_SV_VCF_NAME" \
+          --output-vcf "$PHASED_TRGT_VCF_NAME" \
+          --bam "$LOCAL_BAM" \
+          --output-bam "$sample_id.haplotagged.bam" \
+          --reference "$LOCAL_REF_FASTA" \
+          --summary-file "$sample_id.$REF_NAME.hiphase.stats.tsv" \
+          --blocks-file "$sample_id.$REF_NAME.hiphase.blocks.tsv" \
+          --haplotag-file "$sample_id.$REF_NAME.hiphase.haplotags.tsv"
+        
+        HIPHASE_EXIT_CODE=$?
+        set -e
+
+        if [ $HIPHASE_EXIT_CODE -ne 0 ]; then
+          echo "HiPhase failed with exit code $HIPHASE_EXIT_CODE"
+          exit $HIPHASE_EXIT_CODE
+        fi
+
+        echo "HiPhase completed successfully"
+
+        # Copy all outputs to output folder
+        echo "Copying output files to $output_folder..."
+        
+        # Copy phased VCFs
+        cp "$PHASED_SMALL_VARIANT_VCF_NAME" "$output_folder/"
+        cp "$PHASED_SV_VCF_NAME" "$output_folder/"
+        cp "$PHASED_TRGT_VCF_NAME" "$output_folder/"
+        
+        # Copy phased VCF indices
+        cp "$PHASED_SMALL_VARIANT_VCF_INDEX_NAME" "$output_folder/"
+        cp "$PHASED_SV_VCF_INDEX_NAME" "$output_folder/"
+        cp "$PHASED_TRGT_VCF_INDEX_NAME" "$output_folder/"
+        
+        # Copy haplotagged BAM and index
+        cp "$sample_id.haplotagged.bam" "$output_folder/"
+        cp "$sample_id.haplotagged.bam.bai" "$output_folder/"
+        
+                # Copy phase statistics files
+        cp "$sample_id.$REF_NAME.hiphase.stats.tsv" "$output_folder/"
+        cp "$sample_id.$REF_NAME.hiphase.blocks.tsv" "$output_folder/"
+        gzip "$sample_id.$REF_NAME.hiphase.haplotags.tsv"
+        cp "$sample_id.$REF_NAME.hiphase.haplotags.tsv.gz" "$output_folder/"
+        
+        # Remove original input files from output folder (replaced by phased versions)
+        echo "Removing original input files from output folder..."
+        rm -f "$output_folder/$(basename "$small_variant_vcf")"
+        rm -f "$output_folder/$(basename "$small_variant_vcf_index")"
+        rm -f "$output_folder/$(basename "$sv_vcf")"
+        rm -f "$output_folder/$(basename "$sv_vcf_index")"
+        rm -f "$output_folder/$(basename "$trgt_vcf")"
+        rm -f "$output_folder/$(basename "$trgt_vcf_index")"
+        rm -f "$output_folder/$(basename "$aligned_bam")"
+        rm -f "$output_folder/$(basename "$aligned_bam_index")"        
+        
+        echo "HiPhase VCF phasing and BAM haplotagging completed successfully"
+        echo "Output files copied to: $output_folder" 
+        
+  - name: update_sample_catalog
+    description: Add HiPhase Output to Sample Catalog
+    type: cmd
+    docker:
+      image: ${VSPIPELINE_DOCKER_IMAGE}
+    args:
+      - |- # shell
+        set -eu pipefail
+
+        export GOLDENHELIX_USERDATA=${WORKSPACE_DIR}/AppData
+
+        output_bam_path="${output_folder//${WORKSPACE_DIR}\//}/${sample_id}.haplotagged.bam"
+        gautil client catalog-upsert SampleCatalog \
+          Sample="$sample_id" \
+          BAMPath="$output_bam_path" || \
+          { echo "Failed to update sample catalog"; exit 1; }
+        echo "Updated sample $sample_id with BAM: ${output_bam_path}"

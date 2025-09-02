@@ -1,0 +1,124 @@
+name: PacBio HiFi WGS Pipeline
+description: PacBio HiFi human whole genome sequencing pipeline for individual samples.
+
+agent_requirements:
+  cpu_cores: 64
+  memory_gb: 128
+
+parameters:
+  - name: input_file
+    label: HiFi uBAM Input
+    help: Unaligned BAM (uBAM) PacBio HiFi reads
+    type: file
+
+  - name: output_folder
+    label: Output Folder
+    type: directory
+    supports_location_mode: 'no_append'
+
+  - name: sample_id
+    label: Sample ID
+    type: string
+
+  - name: sex
+    label: Sex
+    type: enum
+    optional: true
+    choices:
+      - MALE
+      - FEMALE
+
+  - name: cache_udocker_images
+    label: Cache Udocker Image
+    type: boolean
+    value: true
+    group: Advanced Options
+
+steps:
+- name: WDL task
+  type: cmd
+  description: Run the wdl workflow
+  args:
+      - |- # shell
+        set -exvuo pipefail
+        
+        # Extract task name from current working directory
+        # TASK_NAME=$(basename "$(dirname "$(dirname "$(dirname "$(dirname "$PWD")")")")")
+        
+        # Function to handle miniwdl failure
+        handle_miniwdl_failure() {
+          local exit_code=$1
+          echo "MiniWDL run failed with exit code $exit_code"
+          echo "Capturing debug information..."
+          bash "$TASK_DIR/miniwdl-debug-capture.sh" /scratch/_LAST "$output_folder"
+          exit $exit_code
+        }
+        
+        # Set up resource paths based on resources_path
+        BASE_DIR="$WORKSPACE_DIR/${RESOURCES_PATH}"
+        RESOURCES_DIR="$BASE_DIR/hifi-wdl-resources-v3.0.0"
+        REF_MAP_FILE="$RESOURCES_DIR/GRCh38.ref_map.v3p0p0.template.tsv"
+        
+        # Set environment variables for miniwdl
+        export MINIWDL__SCHEDULER__CONTAINER_BACKEND=udocker
+        export MINIWDL__FILE_IO__ALLOW_ANY_INPUT=true
+        export MINIWDL__SCHEDULER__TASK_CONCURRENCY=8
+        export UDOCKER_DIR=/scratch/.udocker
+        
+        # Verify resource files exist
+        if [ ! -f "$REF_MAP_FILE" ]; then
+          echo "Error: Reference map file not found at $REF_MAP_FILE"
+          echo "Please ensure the PacBio WDL resources have been downloaded using the Download PacBio Reference Data Resources task"
+          exit 1
+        fi
+        
+        # Pull udocker layers from cache if requested
+        if [ -d "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}" ]; then
+          echo "Pulling udocker image from cache..."
+          mkdir -p /scratch/.udocker
+          cp -R "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}"/* /scratch/.udocker/
+        fi
+        
+        # Create JSON structure using environment variables
+        cat > /scratch/inputs.json << EOF
+        {
+            "humanwgs_singleton.sample_id": "$sample_id",
+            "humanwgs_singleton.sex": "$sex",
+            "max_reads_per_alignment_chunk": 0,
+            "humanwgs_singleton.hifi_reads": [
+              "$input_file"
+            ],
+            "humanwgs_singleton.phenotypes": "",
+            "humanwgs_singleton.ref_map_file": "$REF_MAP_FILE",
+            "humanwgs_singleton.backend": "HPC",
+            "humanwgs_singleton.preemptible": true
+        }
+        EOF
+        cat /scratch/inputs.json
+
+        # Run miniwdl and capture exit code, but don't exit on failure
+        set +e
+        miniwdl run \
+          "${TASK_DIR}/wdl/singleton.wdl" \
+          --dir /scratch \
+          --runtime-cpu-max=$AGENT_CPU_CORES \
+          --runtime-memory-max=${AGENT_MEMORY_GB}G \
+          -i /scratch/inputs.json 
+        
+        MINIWDL_EXIT_CODE=$?
+        set -e
+
+        # Copy udocker cache to output folder
+        if [ "$cache_udocker_images" = true ] && [ ! -d "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}" ]; then
+          echo "Copying udocker cache to resources folder..."
+          mkdir -p "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}"
+          cp -r /scratch/.udocker/layers /scratch/.udocker/repos "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}" 2>/dev/null || true
+        fi
+
+        # Process all files and values in outputs.json
+        bash "$TASK_DIR/process-outputs.sh" "$output_folder" "$sample_id" 
+
+        if [ $MINIWDL_EXIT_CODE -ne 0 ]; then
+          echo "MiniWDL run failed with exit code $MINIWDL_EXIT_CODE"
+          handle_miniwdl_failure $MINIWDL_EXIT_CODE
+        fi
