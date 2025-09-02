@@ -70,7 +70,7 @@ workflow deepvariant {
   }
 
   Int total_deepvariant_tasks = 64
-  Int num_shards              = 4
+  Int num_shards              = 8
   Int tasks_per_shard         = total_deepvariant_tasks / num_shards
 
   String docker_image = (if (default_runtime_attributes.backend == "AWS-HealthOmics") then default_runtime_attributes.container_registry else "google") + "/deepvariant:~{deepvariant_version}"
@@ -208,7 +208,7 @@ task deepvariant_make_examples {
 
   Int task_end_index = task_start_index + tasks_per_shard - 1
 
-  Int mem_gb         = tasks_per_shard * 2 # Changed by GHI from 4 to 2 based on observed data
+  Int mem_gb         = ceil(tasks_per_shard * 1.5) # Changed by GHI from 4 based on observed data
   Int disk_size      = ceil(size(aligned_bams, "GB") * 2 + size(ref_fasta, "GB") + 20)
 
   command <<<
@@ -316,7 +316,7 @@ task deepvariant_call_variants_cpu {
 
   Int threads        = total_deepvariant_tasks
   Int writer_threads = 8
-  Int mem_gb         = total_deepvariant_tasks * 4
+  Int mem_gb         = total_deepvariant_tasks # Changed to not have (*4) to fit
   Int disk_size      = ceil(size(example_tfrecord_tars, "GB") * 2 + 100)
 
   command <<<
