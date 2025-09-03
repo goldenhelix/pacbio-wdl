@@ -18,8 +18,6 @@ parameters:
     pattern_match:
       - "*.bam"
     description: "Aligned BAM file"
-
-
     
   - name: output_folder
     label: Output Folder

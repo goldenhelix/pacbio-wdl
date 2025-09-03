@@ -47,25 +47,6 @@ steps:
           echo "Warning: TASK_NAME not set, using default: $TASK_NAME"
         fi
 
-        # Get sample sex from catalog
-        echo "Looking up sample sex for: $sample_id"
-        set +e
-        sex=$(gautil client catalog-export SampleCatalog Sample:eq:"$sample_id" --fields="Sex" | tail -n 1 | tr -d '\r\n\t ')
-        sex_lookup_exit_code=$?
-        set -e
-        
-        if [ $sex_lookup_exit_code -ne 0 ] || [ -z "$sex" ] || [ "$sex" != "Male" ] && [ "$sex" != "Female" ]; then
-          echo "Warning: Could not determine sex for sample $sample_id (exit code: $sex_lookup_exit_code, value: '$sex'), defaulting to Female"
-          sex="Female"
-        fi
-        
-        # Convert to uppercase for consistency with existing logic
-        if [ "$sex" = "Male" ]; then
-          sex="MALE"
-        elif [ "$sex" = "Female" ]; then
-          sex="FEMALE"
-        fi
-
         # Function to handle miniwdl failure
         handle_miniwdl_failure() {
           local exit_code=$1

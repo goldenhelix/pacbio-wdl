@@ -1,5 +1,6 @@
 name: mosdepth
 description: Run mosdepth to calculate depth of coverage for BAM. 
+auto_generate_session_for_account: "{workspaceBot}"
 
 agent_requirements: 
   cpu_cores: 4
@@ -127,3 +128,31 @@ steps:
           echo "MiniWDL run failed with exit code $MINIWDL_EXIT_CODE"
           handle_miniwdl_failure $MINIWDL_EXIT_CODE
       fi
+
+      # Process predicted sex output
+      if [ "$infer_sex" = true ]; then
+
+        echo "Processing predicted sex output"
+
+        # Get "inferred_sex" from outputs.json
+        inferred_sex=$(jq -r '.["mosdepth.inferred_sex"]' /scratch/_LAST/outputs.json)
+        echo "Inferred sex: $inferred_sex"
+
+        # Update "sex" in catalog
+        sex=$(gautil client catalog-export SampleCatalog Sample:eq:"$sample_id" --fields="Sex" | tail -n 1 | tr -d '\r\n\t ') || \
+          { echo "WARNING: Failed to get sex from catalog"; exit 0; }
+        if [ -z "$sex" ]; then
+          echo "No sex field found in catalog, updating sex in catalog to: $inferred_sex"
+          gautil client catalog-upsert SampleCatalog Sample="$sample_id" Sex="$inferred_sex" || \
+            { echo "WARNING: Failed to update sex in catalog"; }
+        elif [ "${sex,,}" != "${inferred_sex,,}" ]; then
+          echo "WARNING: Sex field in catalog does not match predicted sex: $sex != $inferred_sex"
+          echo "Updating inferred sex in catalog to: $inferred_sex"
+          gautil client catalog-upsert SampleCatalog Sample="$sample_id" InferredSex="$inferred_sex" || \ 
+            { echo "WARNING: Failed to update inferred sex in catalog"; }
+        else
+          echo "Sex field found in catalog and matches predicted sex: $sex == $inferred_sex"
+          echo "Skipping update"
+        fi
+
+      fi 
