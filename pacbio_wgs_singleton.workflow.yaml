@@ -281,7 +281,7 @@ stages:
       - name: output_folder
         label: Output Folder
         type: stage
-        stage: HiPhase
+        stage: pbmm2 Alignment
         stage_parameter_expression: "${output_folder}"
 
       - name: cache_udocker_images
@@ -313,7 +313,7 @@ stages:
       - name: output_folder
         label: Output Folder
         type: stage
-        stage: HiPhase
+        stage: pbmm2 Alignment
         stage_parameter_expression: "${output_folder}"
         
       - name: cache_udocker_images
@@ -347,6 +347,7 @@ stages:
     task_path: tasks/vspipeline.task.yaml
     depends_on:
       - HiPhase
+      - Mitorsaw
       - Upload PGx Results
 
     task_parameters:
