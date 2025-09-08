@@ -86,7 +86,8 @@ steps:
         if [ -d "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}" ]; then
           echo "Pulling udocker image from cache..."
           mkdir -p /scratch/.udocker
-          cp -R "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}"/* /scratch/.udocker/
+          cp -R "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}"/* /scratch/.udocker/ || \
+            { echo "Failed to copy udocker cache to /scratch/.udocker; will pull layers instead"; }
         fi
         
         # Check for required input files
