@@ -9,14 +9,14 @@ parameters:
   - name: sample_id
     label: "Sample ID"
     type: string
-    description: "Sample ID"
+    help: "Sample ID"
 
   - name: haplotagged_bam
     label: "Haplotagged BAM"
     type: file
     pattern_match:
       - "*.bam"
-    description: "Haplotagged BAM file from hiphase step"
+    help: "Haplotagged BAM file from hiphase step"
 
   - name: output_folder
     label: "Output Folder"
