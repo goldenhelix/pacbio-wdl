@@ -3,7 +3,7 @@ description: "Haplotype genes in hard to align regions using Paraphase."
 
 agent_requirements:
   cpu_cores: 16
-  memory_gb: 64
+  memory_gb: 32
 
 parameters:
   - name: sample_id

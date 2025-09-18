@@ -2,8 +2,8 @@ name: pbmm2 Alignment
 description: Align PacBio HiFi reads to a reference genome using pbmm2 aligner.
 
 agent_requirements:
-  cpu_cores: 64
-  memory_gb: 128
+  cpu_cores: 48
+  memory_gb: 96
 
 parameters:
   - name: sample_id

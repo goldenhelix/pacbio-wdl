@@ -3,7 +3,7 @@ description: Run mosdepth to calculate depth of coverage for BAM.
 auto_generate_session_for_account: "{workspaceBot}"
 
 agent_requirements: 
-  cpu_cores: 4
+  cpu_cores: 8
   memory_gb: 8
 
 parameters:
