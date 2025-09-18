@@ -37,7 +37,7 @@ steps:
         echo "Base directory: $BASE_DIR"
 
         cd /scratch
-        curl  --silent https://zenodo.org/records/15750792/files/hifi-wdl-resources-v3.0.0.tar | tar -xf - -C "$BASE_DIR"
+        curl  --silent https://zenodo.org/records/15750792/files/hifi-wdl-resources-v3.0.0.tar | tar --no-same-owner -m -xf - -C "$BASE_DIR"
 
         find "$BASE_DIR/hifi-wdl-resources-v3.0.0" -name "*.tsv" -type f -exec sed -i "s|<prefix>|${BASE_DIR}|g" {} \;
         find "$BASE_DIR/hifi-wdl-resources-v3.0.0" -name "*.tsv" -type f -exec sed -i "s|\$WORKSPACE_DIR|${WORKSPACE_DIR}|g" {} \;
