@@ -26,6 +26,7 @@ steps:
         if [ -z "$BASE_DIR" ]; then 
           BASE_DIR="$WORKSPACE_DIR/${RESOURCES_PATH}"
         fi
+        mkdir -p "$BASE_DIR"
         if [ ! -d "$BASE_DIR" ]; then
           echo "The default resource path does not exist or is not a valid directory at $RESOURCES_PATH"
           echo "Please update the RESOURCES_PATH in Workspace Settings to point to a valid directory that can be used to download the reference and then re-run this task"
