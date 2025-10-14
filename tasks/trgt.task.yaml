@@ -84,7 +84,7 @@ steps:
         # Set up reference files (hardcoded from ref_map)
         REF_FASTA="${PB_RESOURCES_DIR}/GRCh38/human_GRCh38_no_alt_analysis_set.fasta"
         REF_INDEX="${PB_RESOURCES_DIR}/GRCh38/human_GRCh38_no_alt_analysis_set.fasta.fai"
-        TRGT_BED="${PB_RESOURCES_DIR}/GRCh38/trgt/adotto_strchive_20250626.hg38.bed.gz"
+        TRGT_BED="${PB_RESOURCES_DIR}/GRCh38/trgt/adotto_strchive_20250827.hg38.bed.gz"
 
         # Find index files
         aligned_bam_index="${aligned_bam}.bai"
