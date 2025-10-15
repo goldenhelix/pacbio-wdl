@@ -11,10 +11,10 @@ stages:
       path:
         type: directory
         supports_location_mode: 'read_only'
-      glob_ex: '**/*.*.bam'
+      glob_ex: '*/*.bam'
       output_parameters:
         - task_parameter_name: sample_id
-          expression: '${2}'
+          expression: '${1}'
         - task_parameter_name: bam
           expression: '${0}'
       help: "The folder containing the uBAM file(s) to align. \nThe number of samples (and therefore the number of runs) is determined by the number of files matching the glob expression. \nSee the glob expression help section for help with writing glob expressions to match your data."
@@ -29,19 +29,52 @@ stages:
         label: Cache Udocker Image
         type: boolean
         value: true
-        
+
+  - name: Merge BAMs
+    description: Merge BAM files for a given sample. 
+    task_path: tasks/merge_bams.task.yaml
+    depends_on:
+      - pbmm2 Alignment
+
+    glob_parameter:
+      label: Input Folder
+      path:
+        type: stage
+        stage: pbmm2 Alignment
+        parameter: output_folder
+      glob_ex: '**/*.*.aligned.bam'
+      output_parameters:
+        - task_parameter_name: sample_id
+          expression: '${2}'
+      help: The folder containing the original uBAM files; used to determine the sample IDs. 
+
+    task_parameters:
+      - name: input_folder
+        label: Input Folder
+        type: stage
+        stage: pbmm2 Alignment
+        stage_parameter_expression: "${output_folder}"
+        supports_location_mode: 'read_only'
+
+      - name: cache_udocker_images
+        label: Cache Udocker Image
+        type: stage
+        stage: pbmm2 Alignment
+        stage_parameter_expression: "${cache_udocker_images}"
+        value: true
+
   - name: DeepVariant
     description: Call variants from PacBio HiFi reads using DeepVariant.
     task_path: tasks/deepvariant.task.yaml
     depends_on:
-      - pbmm2 Alignment
+      - Merge BAMs
 
     glob_parameter:
       label: Alignment Folder
       path: 
         type: stage
-        stage: pbmm2 Alignment
-        parameter: output_folder
+        stage: Merge BAMs
+        parameter: input_folder
       glob_ex: '**/*.aligned.bam'
       output_parameters:
         - task_parameter_name: aligned_bam
@@ -53,27 +86,27 @@ stages:
       - name: output_folder
         label: Output Folder
         type: stage
-        stage: pbmm2 Alignment
-        stage_parameter_expression: "${output_folder}"
+        stage: Merge BAMs
+        stage_parameter_expression: "${input_folder}"
       
       - name: cache_udocker_images
         label: Cache Udocker Image
         type: stage
-        stage: pbmm2 Alignment
+        stage: Merge BAMs
         stage_parameter_expression: "${cache_udocker_images}"
 
   - name: mosdepth
     description: Calculate depth of coverage for BAM.
     task_path: tasks/mosdepth.task.yaml
     depends_on:
-      - pbmm2 Alignment
+      - Merge BAMs
 
     glob_parameter:
       label: Alignment Folder
       path: 
         type: stage
-        stage: pbmm2 Alignment
-        parameter: output_folder
+        stage: Merge BAMs
+        parameter: input_folder
       glob_ex: '**/*.aligned.bam'
       output_parameters:
         - task_parameter_name: aligned_bam
@@ -85,13 +118,13 @@ stages:
       - name: output_folder
         label: Output Folder
         type: stage
-        stage: pbmm2 Alignment
-        stage_parameter_expression: "${output_folder}"
+        stage: Merge BAMs
+        stage_parameter_expression: "${input_folder}"
 
       - name: cache_udocker_images
         label: Cache Udocker Image
         type: stage
-        stage: pbmm2 Alignment
+        stage: Merge BAMs
         stage_parameter_expression: "${cache_udocker_images}"
 
       - name: infer_sex
@@ -110,8 +143,8 @@ stages:
       label: Alignment Folder
       path: 
         type: stage
-        stage: pbmm2 Alignment
-        parameter: output_folder
+        stage: Merge BAMs
+        parameter: input_folder
       glob_ex: '**/*.aligned.bam'
       output_parameters:
         - task_parameter_name: aligned_bam
@@ -123,28 +156,28 @@ stages:
       - name: output_folder
         label: Output Folder
         type: stage
-        stage: pbmm2 Alignment
-        stage_parameter_expression: "${output_folder}"
+        stage: Merge BAMs
+        stage_parameter_expression: "${input_folder}"
 
       - name: cache_udocker_images
         label: Cache Udocker Image
         type: stage
-        stage: pbmm2 Alignment
+        stage: Merge BAMs
         stage_parameter_expression: "${cache_udocker_images}"
 
   - name: TRGT
     description: Genotype tandem repeats from aligned reads using TRGT.
     task_path: tasks/trgt.task.yaml
     depends_on:
-      - pbmm2 Alignment
+      - Merge BAMs
       - mosdepth
 
     glob_parameter:
       label: Alignment Folder
       path: 
         type: stage
-        stage: pbmm2 Alignment
-        parameter: output_folder
+        stage: Merge BAMs
+        parameter: input_folder
       glob_ex: '**/*.aligned.bam'
       output_parameters:
         - task_parameter_name: aligned_bam
@@ -156,8 +189,8 @@ stages:
       - name: output_folder
         label: Output Folder
         type: stage
-        stage: pbmm2 Alignment
-        stage_parameter_expression: "${output_folder}"
+        stage: Merge BAMs
+        stage_parameter_expression: "${input_folder}"
 
       - name: cache_udocker_images
         label: Cache Udocker Image
@@ -169,14 +202,14 @@ stages:
     description: Haplotype genes in hard to align regions using Paraphase.
     task_path: tasks/paraphase.task.yaml
     depends_on:
-      - pbmm2 Alignment
+      - Merge BAMs
 
     glob_parameter:
       label: Alignment Folder
       path: 
         type: stage
-        stage: pbmm2 Alignment
-        parameter: output_folder
+        stage: Merge BAMs
+        parameter: input_folder
       glob_ex: '**/*.aligned.bam'
       output_parameters:
         - task_parameter_name: aligned_bam
@@ -188,28 +221,28 @@ stages:
       - name: output_folder
         label: Output Folder
         type: stage
-        stage: pbmm2 Alignment
-        stage_parameter_expression: "${output_folder}"
+        stage: Merge BAMs
+        stage_parameter_expression: "${input_folder}"
 
       - name: cache_udocker_images
         label: Cache Udocker Image
         type: stage
-        stage: pbmm2 Alignment
+        stage: Merge BAMs
         stage_parameter_expression: "${cache_udocker_images}"
 
   - name: Mitorsaw
     description: Identify and quantify mitochondrial variants and haplotypes from aligned BAM files using Mitorsaw.
     task_path: tasks/mitorsaw.task.yaml
     depends_on:
-      - pbmm2 Alignment
+      - Merge BAMs
       - mosdepth
 
     glob_parameter:
       label: Alignment Folder
       path: 
         type: stage
-        stage: pbmm2 Alignment
-        parameter: output_folder
+        stage: Merge BAMs
+        parameter: input_folder
       glob_ex: '**/*.aligned.bam'
       output_parameters:
         - task_parameter_name: aligned_bam
@@ -221,13 +254,13 @@ stages:
       - name: output_folder
         label: Output Folder
         type: stage
-        stage: pbmm2 Alignment
-        stage_parameter_expression: "${output_folder}"
+        stage: Merge BAMs
+        stage_parameter_expression: "${input_folder}"
 
       - name: cache_udocker_images
         label: Cache Udocker Image
         type: stage
-        stage: pbmm2 Alignment
+        stage: Merge BAMs
         stage_parameter_expression: "${cache_udocker_images}"
 
   - name: HiPhase
@@ -257,6 +290,38 @@ stages:
         type: stage
         stage: pbmm2 Alignment
         stage_parameter_expression: "${output_folder}"
+
+  - name: CpG and MethBat Analysis
+    description: Generate CpG methylation scores and perform methylation analysis.
+    task_path: tasks/cpg_and_methbat.task.yaml
+    depends_on:
+      - HiPhase
+
+    glob_parameter:
+      label: Alignment Folder
+      path:
+        type: stage
+        stage: HiPhase
+        parameter: output_folder
+      glob_ex: '**/*.haplotagged.bam'
+      output_parameters:
+        - task_parameter_name: haplotagged_bam
+          expression: '${0}'
+        - task_parameter_name: sample_id
+          expression: '${2}'
+
+    task_parameters:
+      - name: output_folder
+        label: Output Folder
+        type: stage
+        stage: pbmm2 Alignment
+        stage_parameter_expression: "${output_folder}"
+
+      - name: cache_udocker_images
+        label: Cache Udocker Image
+        type: stage
+        stage: pbmm2 Alignment
+        stage_parameter_expression: "${cache_udocker_images}"
 
   - name: Secondary Analysis Stats
     description: Generate secondary analysis statistics.

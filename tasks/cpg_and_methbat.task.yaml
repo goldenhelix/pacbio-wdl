@@ -1,0 +1,330 @@
+name: CpG Pileup and MethBat Analysis
+description: Generate CpG methylation scores and perform methylation analysis
+
+agent_requirements:
+  cpu_cores: 8
+  memory_gb: 16
+
+parameters:
+  - name: sample_id
+    label: "Sample ID"
+    type: string
+
+  - name: haplotagged_bam
+    label: "Haplotagged BAM"
+    type: file
+    pattern_match:
+      - "*.bam"
+
+  - name: output_folder
+    label: "Output Folder"
+    type: directory
+    supports_location_mode: "no_append"
+
+  - name: cache_udocker_images
+    label: "Cache Udocker Images"
+    type: boolean
+    value: true
+
+steps:
+  - name: cpg_and_methbat_analysis
+    type: cmd
+    description: "Generate CpG methylation scores and perform methylation analysis"
+    args:
+      - |- # shell
+        set -eu pipefail
+
+        # Set up resource path
+        PB_RESOURCES_DIR="${WORKSPACE_DIR}/${RESOURCES_PATH}/hifi-wdl-resources-v3.1.0"
+
+        # Function to handle miniwdl failure
+        handle_miniwdl_failure() {
+          local exit_code=$1
+          echo "MiniWDL run failed with exit code $exit_code"
+          echo "Capturing debug information..."
+          bash "$TASK_DIR/miniwdl-debug-capture.sh" /scratch/_LAST "$output_folder" "$TASK_NAME"
+          exit $exit_code
+        }
+
+        # Set environment variables for miniwdl
+        export MINIWDL__SCHEDULER__CONTAINER_BACKEND=udocker
+        export MINIWDL__FILE_IO__ALLOW_ANY_INPUT=true
+        export MINIWDL__SCHEDULER__TASK_CONCURRENCY=8
+        export UDOCKER_DIR=/scratch/.udocker
+        
+        # Common variables
+        REF_NAME="GRCh38"
+        REF_FASTA="${PB_RESOURCES_DIR}/GRCh38/human_GRCh38_no_alt_analysis_set.fasta"
+        REF_INDEX="${PB_RESOURCES_DIR}/GRCh38/human_GRCh38_no_alt_analysis_set.fasta.fai"
+        METHBAT_REGION_TSV="${PB_RESOURCES_DIR}/GRCh38/methbat/cpgIslandExt.sorted.hg38.tsv"
+
+        # Find index files
+        haplotagged_bam_index="${haplotagged_bam}.bai"
+
+        # Verify reference files exist
+        if [ ! -f "$REF_FASTA" ]; then
+          echo "Error: Reference FASTA file not found at $REF_FASTA"
+          echo "Please ensure the PacBio WDL resources have been downloaded using the Download PacBio Reference Data Resources task"
+          exit 1
+        fi
+
+        if [ ! -f "$REF_INDEX" ]; then
+          echo "Error: Reference FASTA index file not found at $REF_INDEX"
+          echo "Please ensure the PacBio WDL resources have been downloaded using the Download PacBio Reference Data Resources task"
+          exit 1
+        fi
+
+        if [ ! -f "$METHBAT_REGION_TSV" ]; then
+          echo "Error: MethBat region TSV file not found at $METHBAT_REGION_TSV"
+          echo "Please ensure the PacBio WDL resources have been downloaded using the Download PacBio Reference Data Resources task"
+          exit 1
+        fi
+        
+        # Pull udocker layers from cache if requested
+        if [ -d "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}" ]; then
+          echo "Pulling udocker image from cache..."
+          mkdir -p /scratch/.udocker
+          cp -R "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}"/* /scratch/.udocker/ || \
+            { echo "Failed to copy udocker cache to /scratch/.udocker; will pull layers instead"; }
+        fi
+        
+        # Check for required input files
+        if [ ! -f "$haplotagged_bam" ]; then
+          echo "Error: Haplotagged BAM file not found at $haplotagged_bam"
+          exit 1
+        fi
+        
+        if [ ! -f "$haplotagged_bam_index" ]; then
+          echo "Error: BAM index file not found at $haplotagged_bam_index"
+          exit 1
+        fi
+
+        # Copy input files to /scratch
+        echo "Copying input files to /scratch..."
+        cp "${haplotagged_bam}" /scratch/
+        cp "$haplotagged_bam_index" /scratch/
+        
+        # Copy reference files to /scratch
+        echo "Copying reference files to /scratch..."
+        cp "$REF_FASTA" /scratch/
+        cp "$REF_INDEX" /scratch/
+        cp "$METHBAT_REGION_TSV" /scratch/
+        
+        # Set local file paths
+        LOCAL_BAM="/scratch/$(basename "${haplotagged_bam}")"
+        LOCAL_BAM_INDEX="/scratch/$(basename "${haplotagged_bam_index}")"
+        LOCAL_REF_FASTA="/scratch/$(basename "$REF_FASTA")"
+        LOCAL_REF_INDEX="/scratch/$(basename "$REF_INDEX")"
+        LOCAL_METHBAT_REGION_TSV="/scratch/$(basename "$METHBAT_REGION_TSV")"
+
+        echo "*************************"
+        echo "Starting CpG pileup and MethBat analysis for $sample_id"
+        echo "Space on agent: $(df -h /scratch | tail -n 1 | awk '{print $4}')"
+        echo "Input Parameters:"
+        echo "  - sample_id: $sample_id"
+        echo "  - haplotagged_bam: $haplotagged_bam"
+        echo "  - output_folder: $output_folder"
+        echo "  - cache_udocker_images: $cache_udocker_images"
+        echo "*************************"
+
+        # Step 1: Run CpG pileup
+        echo "================================================"
+        echo "🚀 STARTING CPG PILEUP ANALYSIS"
+        echo "================================================"
+        echo "📅 Server Time: $(date)"
+        echo "📁 Input Files:"
+        echo "  - Haplotagged BAM: $(basename "$LOCAL_BAM")"
+        echo "  - Haplotagged BAM Index: $(basename "$LOCAL_BAM_INDEX")"
+        echo "  - Reference FASTA: $(basename "$LOCAL_REF_FASTA")"
+        echo "  - Reference FASTA Index: $(basename "$LOCAL_REF_INDEX")"
+        echo "⚙️  Configuration:"
+        echo "  - Threads: $AGENT_CPU_CORES"
+        echo "  - Memory: ${AGENT_MEMORY_GB}G"
+        echo "================================================"
+        
+        # Record start time
+        CPG_PILEUP_START_TIME=$(date +%s)
+        
+        # Generate CpG pileup input JSON using jq
+        jq -n \
+          --arg haplotagged_bam "$LOCAL_BAM" \
+          --arg haplotagged_bam_index "$LOCAL_BAM_INDEX" \
+          --arg out_prefix "${sample_id}.${REF_NAME}" \
+          --arg ref_fasta "$LOCAL_REF_FASTA" \
+          --arg ref_index "$LOCAL_REF_INDEX" \
+          --argjson threads "$AGENT_CPU_CORES" \
+          '{
+            "cpg_pileup.haplotagged_bam": $haplotagged_bam,
+            "cpg_pileup.haplotagged_bam_index": $haplotagged_bam_index,
+            "cpg_pileup.out_prefix": $out_prefix,
+            "cpg_pileup.ref_fasta": $ref_fasta,
+            "cpg_pileup.ref_index": $ref_index,
+            "cpg_pileup.runtime_attributes": {
+              "backend": "HPC",
+              "preemptible_tries": 0,
+              "max_retries": 1,
+              "zones": "",
+              "cpuPlatform": "",
+              "gpuType": "",
+              "container_registry": "quay.io/pacbio"
+            }
+          }' > /scratch/cpg_pileup_inputs.json
+
+        # Run cpg_pileup with miniwdl and capture output
+        echo "Running CpG pileup..."
+        set +e
+        CPG_PILEUP_OUTPUT=$(miniwdl run \
+          --task cpg_pileup \
+          "${TASK_DIR}/wdl/wdl-common/wdl/tasks/cpg_pileup.wdl" \
+          --dir /scratch \
+          --runtime-cpu-max=$AGENT_CPU_CORES \
+          --runtime-memory-max=${AGENT_MEMORY_GB}G \
+          -i /scratch/cpg_pileup_inputs.json 2>/dev/null)
+        CPG_PILEUP_EXIT_CODE=$?
+        set -e
+
+        if [ $CPG_PILEUP_EXIT_CODE -ne 0 ]; then
+          echo "CpG pileup failed with exit code $CPG_PILEUP_EXIT_CODE"
+          handle_miniwdl_failure $CPG_PILEUP_EXIT_CODE
+        fi
+
+        # Post-execution logging for CpG pileup
+        CPG_PILEUP_END_TIME=$(date +%s)
+        CPG_PILEUP_DURATION=$((CPG_PILEUP_END_TIME - CPG_PILEUP_START_TIME))
+        CPG_PILEUP_DURATION_HOUR=$((CPG_PILEUP_DURATION / 3600))
+        CPG_PILEUP_DURATION_MIN=$(((CPG_PILEUP_DURATION % 3600) / 60))
+        CPG_PILEUP_DURATION_SEC=$((CPG_PILEUP_DURATION % 60))
+        
+        echo "================================================"
+        echo "✅ CPG PILEUP ANALYSIS COMPLETED SUCCESSFULLY"
+        echo "================================================"
+        echo "⏱️  Execution Time: ${CPG_PILEUP_DURATION_HOUR}h ${CPG_PILEUP_DURATION_MIN}m ${CPG_PILEUP_DURATION_SEC}s"
+        echo "📁 CpG Pileup Output: $CPG_PILEUP_OUTPUT"
+        echo "================================================"
+        
+        # Copy output of cpg_pileup to output folder
+        bash "$TASK_DIR/process-outputs.sh" "$output_folder" "${sample_id}" 
+
+        # Step 2: Run MethBat (if CpG pileup succeeded)
+        echo "================================================"
+        echo "🚀 STARTING METHBAT ANALYSIS"
+        echo "================================================"
+        echo "📅 Server Time: $(date)"
+        echo "📁 Input Files:"
+        echo "  - MethBat Region TSV: $(basename "$LOCAL_METHBAT_REGION_TSV")"
+        echo "⚙️  Configuration:"
+        echo "  - Threads: $AGENT_CPU_CORES"
+        echo "  - Memory: ${AGENT_MEMORY_GB}G"
+        echo "================================================"
+        
+        # Extract CpG pileup output files from captured output
+        echo "Extracting CpG pileup output files..."
+        CPG_COMBINED_BED=$(echo "$CPG_PILEUP_OUTPUT" | jq -r '.outputs."cpg_pileup.combined_bed"')
+        CPG_HAP1_BED=$(echo "$CPG_PILEUP_OUTPUT" | jq -r '.outputs."cpg_pileup.hap1_bed"')
+        CPG_HAP2_BED=$(echo "$CPG_PILEUP_OUTPUT" | jq -r '.outputs."cpg_pileup.hap2_bed"')
+        
+        echo "Extracted CpG pileup outputs:"
+        echo "  - Combined BED: $CPG_COMBINED_BED"
+        echo "  - Hap1 BED: $CPG_HAP1_BED"
+        echo "  - Hap2 BED: $CPG_HAP2_BED"
+        
+        # Validate that we got valid output from CpG pileup
+        if [ -z "$CPG_PILEUP_OUTPUT" ] || [ "$CPG_PILEUP_OUTPUT" = "null" ]; then
+          echo "Error: CpG pileup output not found or invalid"
+          echo "DEBUG: Full CPG_PILEUP_OUTPUT content:"
+          echo "$CPG_PILEUP_OUTPUT"
+          exit 1
+        fi
+        
+        # Check if we have any CpG pileup BED files
+        METHBAT_INPUT_BEDS="[]"
+        if [ -n "$CPG_COMBINED_BED" ] && [ "$CPG_COMBINED_BED" != "null" ] && [ -f "$CPG_COMBINED_BED" ]; then
+          METHBAT_INPUT_BEDS="[\"$CPG_COMBINED_BED\""
+          if [ -n "$CPG_HAP1_BED" ] && [ "$CPG_HAP1_BED" != "null" ] && [ -f "$CPG_HAP1_BED" ]; then
+            METHBAT_INPUT_BEDS="${METHBAT_INPUT_BEDS}, \"$CPG_HAP1_BED\""
+          fi
+          if [ -n "$CPG_HAP2_BED" ] && [ "$CPG_HAP2_BED" != "null" ] && [ -f "$CPG_HAP2_BED" ]; then
+            METHBAT_INPUT_BEDS="${METHBAT_INPUT_BEDS}, \"$CPG_HAP2_BED\""
+          fi
+          METHBAT_INPUT_BEDS="${METHBAT_INPUT_BEDS}]"
+        fi
+        
+        echo "MethBat input BEDs: $METHBAT_INPUT_BEDS"
+        
+        # Only run MethBat if we have input BED files
+        if [ "$METHBAT_INPUT_BEDS" != "[]" ]; then
+          # Record start time
+          METHBAT_START_TIME=$(date +%s)
+          
+          # Generate MethBat input JSON using jq
+          jq -n \
+            --arg sample_prefix "${sample_id}.${REF_NAME}.cpg_pileup" \
+            --argjson methylation_pileup_beds "$METHBAT_INPUT_BEDS" \
+            --arg region_tsv "$LOCAL_METHBAT_REGION_TSV" \
+            --arg out_prefix "${sample_id}.${REF_NAME}" \
+            '{
+              "methbat.sample_prefix": $sample_prefix,
+              "methbat.methylation_pileup_beds": $methylation_pileup_beds,
+              "methbat.region_tsv": $region_tsv,
+              "methbat.out_prefix": $out_prefix,
+              "methbat.runtime_attributes": {
+                "backend": "HPC",
+                "preemptible_tries": 0,
+                "max_retries": 1,
+                "zones": "",
+                "cpuPlatform": "",
+                "gpuType": "",
+                "container_registry": "quay.io/pacbio"
+              }
+            }' > /scratch/methbat_inputs.json
+
+          # Run methbat with miniwdl and capture output
+          echo "Running MethBat..."
+          set +e
+          METHBAT_OUTPUT=$(miniwdl run \
+            --task methbat \
+            "${TASK_DIR}/wdl/wdl-common/wdl/tasks/methbat.wdl" \
+            --dir /scratch \
+            --runtime-cpu-max=$AGENT_CPU_CORES \
+            --runtime-memory-max=${AGENT_MEMORY_GB}G \
+            -i /scratch/methbat_inputs.json 2>/dev/null)
+          METHBAT_EXIT_CODE=$?
+          set -e
+
+          if [ $METHBAT_EXIT_CODE -ne 0 ]; then
+            echo "MethBat analysis failed with exit code $METHBAT_EXIT_CODE"
+            handle_miniwdl_failure $METHBAT_EXIT_CODE
+          fi
+
+          # Post-execution logging for MethBat
+          METHBAT_END_TIME=$(date +%s)
+          METHBAT_DURATION=$((METHBAT_END_TIME - METHBAT_START_TIME))
+          METHBAT_DURATION_HOUR=$((METHBAT_DURATION / 3600))
+          METHBAT_DURATION_MIN=$(((METHBAT_DURATION % 3600) / 60))
+          METHBAT_DURATION_SEC=$((METHBAT_DURATION % 60))
+          
+          echo "================================================"
+          echo "✅ METHBAT ANALYSIS COMPLETED SUCCESSFULLY"
+          echo "================================================"
+          echo "⏱️  Execution Time: ${METHBAT_DURATION_HOUR}h ${METHBAT_DURATION_MIN}m ${METHBAT_DURATION_SEC}s"
+          echo "📁 MethBat Output: $METHBAT_OUTPUT"
+          echo "================================================"
+          
+          # Copy output of methbat to output folder
+          bash "$TASK_DIR/process-outputs.sh" "$output_folder" "${sample_id}" 
+        else
+          echo "No CpG pileup BED files found, skipping MethBat analysis"
+        fi
+        
+        # Copy udocker cache to output folder
+        if [ "$cache_udocker_images" = true ] && [ ! -d "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}" ]; then
+          echo "Copying udocker cache to resources folder..."
+          mkdir -p "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}"
+          cp -r /scratch/.udocker/layers /scratch/.udocker/repos "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}" 2>/dev/null || true
+        fi
+
+        echo "*************************"
+        echo "CpG pileup and MethBat analysis completed successfully"
+        echo "Space on agent: $(df -h /scratch | tail -n 1 | awk '{print $4}')"
+        echo "Output files copied to: $output_folder"
+        echo "*************************"

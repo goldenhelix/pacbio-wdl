@@ -88,7 +88,7 @@ task hiphase {
     RuntimeAttributes runtime_attributes
   }
 
-  Int threads   = 1
+  Int threads   = 16
   Int mem_gb    = threads * 6
   Int disk_size = ceil(size(vcfs, "GB") + size(ref_fasta, "GB") + size(aligned_bam, "GB") * 2 + 20)
 

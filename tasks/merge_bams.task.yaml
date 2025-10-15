@@ -1,0 +1,120 @@
+name: Merge BAMs
+description: Merge multiple BAM files from a given sample into one. 
+
+agent_requirements:
+  cpu_cores: 8
+  memory_gb: 16
+
+parameters:
+  - name: sample_id
+    label: Sample ID
+    type: string
+    help: The name of the sample to merge.
+
+  - name: input_folder
+    label: Input Folder
+    type: directory
+    help: The folder containing the BAM files to merge.
+
+
+  - name: cache_udocker_images
+    label: Cache Udocker Image
+    type: boolean
+    value: true
+
+steps:
+  - name: merge_bams
+    type: cmd
+    description: Merge the BAM files into one.
+    args:
+      - |- # shell
+        set -euo pipefail
+
+        # Function to handle miniwdl failure
+        handle_miniwdl_failure() {
+          local exit_code=$1
+          echo "MiniWDL run failed with exit code $exit_code"
+          echo "Capturing debug information..."
+          bash "$TASK_DIR/miniwdl-debug-capture.sh" /scratch/_LAST "$input_folder" "$TASK_NAME"
+          exit $exit_code
+        }
+
+        # Find input BAM files
+        mapfile -t INPUT_BAMS < <(find "$input_folder" -name "${sample_id}.*.bam")
+        
+        # Check if no BAM files found
+        if [ ${#INPUT_BAMS[@]} -eq 0 ]; then
+          echo "Error: No BAM files matching pattern ${sample_id}.*.bam found in "$input_folder""
+          exit 1
+        fi
+
+        # Check if there is only one BAM file found
+        if [ ${#INPUT_BAMS[@]} -eq 1 ]; then
+          echo "Only one BAM file found, renaming to aligned.bam"
+          mv "${INPUT_BAMS[0]}" "${input_folder}/${sample_id}.aligned.bam"
+          mv "${INPUT_BAMS[0]}.bai" "${input_folder}/${sample_id}.aligned.bam.bai"
+          exit 0
+        fi
+
+        echo "*************************"
+        echo "Starting BAM merging for $sample_id"
+        echo "Space on agent: $(df -h /scratch | tail -n 1 | awk '{print $4}')"
+        echo "Input Parameters:"
+        echo "  - sample_id: $sample_id"
+        echo "  - input_folder: $input_folder"
+        echo "  - Number of BAM files to merge: ${#INPUT_BAMS[@]}"
+        echo "*************************"
+
+        echo "================================================"
+        echo "🚀 STARTING BAM MERGING"
+        echo "================================================"
+        echo "📅 Server Time: $(date)"
+        echo "📁 Input Files:"
+        for bam in "${INPUT_BAMS[@]}"; do
+          echo "  - $(basename "$bam"): $(ls -lh "$bam" | awk '{print $5}')"
+        done
+        echo "⚙️  Configuration:"
+        echo "  - Threads: $AGENT_CPU_CORES"
+        echo "  - Memory: ${AGENT_MEMORY_GB}G"
+        echo "================================================"
+        
+        # Record start time
+        MERGE_START_TIME=$(date +%s)
+
+        # Merge BAM files
+        cp "${INPUT_BAMS[@]}" /scratch/
+        mapfile -t LOCAL_BAMS < <(find /scratch/ -name "${sample_id}.*.bam")
+        samtools --version
+        samtools merge --verbosity 2 --threads "$AGENT_CPU_CORES" -c -p -o "/scratch/${sample_id}.aligned.bam" "${LOCAL_BAMS[@]}"
+        samtools index "/scratch/${sample_id}.aligned.bam"
+        cp "/scratch/${sample_id}.aligned.bam" "${input_folder}/${sample_id}.aligned.bam"
+        cp "/scratch/${sample_id}.aligned.bam.bai" "${input_folder}/${sample_id}.aligned.bam.bai"
+        rm -f "${INPUT_BAMS[@]}"
+        rm -f "${INPUT_BAMS[@]}.bai"
+
+        # Post-execution logging
+        MERGE_END_TIME=$(date +%s)
+        MERGE_DURATION=$((MERGE_END_TIME - MERGE_START_TIME))
+        MERGE_DURATION_HOUR=$((MERGE_DURATION / 3600))
+        MERGE_DURATION_MIN=$(((MERGE_DURATION % 3600) / 60))
+        MERGE_DURATION_SEC=$((MERGE_DURATION % 60))
+        
+        echo "================================================"
+        echo "✅ BAM MERGING COMPLETED SUCCESSFULLY"
+        echo "================================================"
+        echo "⏱️  Execution Time: ${MERGE_DURATION_HOUR}h ${MERGE_DURATION_MIN}m ${MERGE_DURATION_SEC}s"
+        echo "💾 Remaining Disk Space: $(df -h /scratch | tail -n 1 | awk '{print $4}')"
+        echo "📁 Output Files:"
+        echo "  - $(basename "${input_folder}/${sample_id}.aligned.bam"): $(ls -lh "${input_folder}/${sample_id}.aligned.bam" | awk '{print $5}')"
+        echo "  - $(basename "${input_folder}/${sample_id}.aligned.bam.bai"): $(ls -lh "${input_folder}/${sample_id}.aligned.bam.bai" | awk '{print $5}')"
+        echo "================================================"
+
+        echo "*************************"
+        echo "BAM merging completed successfully"
+        echo "Space on agent: $(df -h /scratch | tail -n 1 | awk '{print $4}')"
+        echo "Output files:"
+        echo "  - ${input_folder}/${sample_id}.aligned.bam"
+        echo "  - ${input_folder}/${sample_id}.aligned.bam.bai"
+        echo "*************************"
+        
+        exit 0

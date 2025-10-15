@@ -33,7 +33,7 @@ steps:
         set -eu pipefail
 
         # Set up resource path
-        PB_RESOURCES_DIR="${WORKSPACE_DIR}/${RESOURCES_PATH}/hifi-wdl-resources-v3.0.0"
+        PB_RESOURCES_DIR="${WORKSPACE_DIR}/${RESOURCES_PATH}/hifi-wdl-resources-v3.1.0"
 
         # Set up reference files (hardcoded from ref_map)
         REF_FASTA="${PB_RESOURCES_DIR}/GRCh38/human_GRCh38_no_alt_analysis_set.fasta"
@@ -142,6 +142,15 @@ steps:
         LOCAL_TRGT_VCF="/scratch/$(basename "${trgt_vcf}")"
         LOCAL_TRGT_VCF_INDEX="/scratch/$(basename "${trgt_vcf_index}")"
 
+        echo "*************************"
+        echo "Starting HiPhase VCF phasing and BAM haplotagging for $sample_id"
+        echo "Space on agent: $(df -h /scratch | tail -n 1 | awk '{print $4}')"
+        echo "Input Parameters:"
+        echo "  - sample_id: $sample_id"
+        echo "  - aligned_bam: $aligned_bam"
+        echo "  - output_folder: $output_folder"
+        echo "*************************"
+
         # Generate phased VCF names (matching downstream.wdl line 83)
         PHASED_SMALL_VARIANT_VCF_NAME="$(basename "${small_variant_vcf}" .vcf.gz).phased.vcf.gz"
         PHASED_SV_VCF_NAME="$(basename "${sv_vcf}" .vcf.gz).phased.vcf.gz"
@@ -152,8 +161,25 @@ steps:
         PHASED_SV_VCF_INDEX_NAME="$(basename "${sv_vcf_index}" .vcf.gz.tbi).phased.vcf.gz.tbi"
         PHASED_TRGT_VCF_INDEX_NAME="$(basename "${trgt_vcf_index}" .vcf.gz.tbi).phased.vcf.gz.tbi"
 
-
         # Download and set up hiphase binary
+        echo "================================================"
+        echo "🚀 STARTING HIPHASE ANALYSIS"
+        echo "================================================"
+        echo "📅 Server Time: $(date)"
+        echo "📁 Input Files:"
+        echo "  - Aligned BAM: $(basename "$LOCAL_BAM")"
+        echo "  - Small Variant VCF: $(basename "$LOCAL_SMALL_VARIANT_VCF")"
+        echo "  - Structural Variant VCF: $(basename "$LOCAL_SV_VCF")"
+        echo "  - TRGT VCF: $(basename "$LOCAL_TRGT_VCF")"
+        echo "  - Reference FASTA: $(basename "$LOCAL_REF_FASTA")"
+        echo "⚙️  Configuration:"
+        echo "  - Threads: $AGENT_CPU_CORES"
+        echo "  - Memory: ${AGENT_MEMORY_GB}G"
+        echo "================================================"
+        
+        # Record start time
+        HIPHASE_START_TIME=$(date +%s)
+
         echo "Downloading hiphase binary..."
         cd /scratch
         curl -L -O https://github.com/PacificBiosciences/HiPhase/releases/download/v1.5.0/hiphase-v1.5.0-x86_64-unknown-linux-gnu.tar.gz
@@ -194,7 +220,19 @@ steps:
           exit $HIPHASE_EXIT_CODE
         fi
 
-        echo "HiPhase completed successfully"
+        # Post-execution logging for HiPhase
+        HIPHASE_END_TIME=$(date +%s)
+        HIPHASE_DURATION=$((HIPHASE_END_TIME - HIPHASE_START_TIME))
+        HIPHASE_DURATION_HOUR=$((HIPHASE_DURATION / 3600))
+        HIPHASE_DURATION_MIN=$(((HIPHASE_DURATION % 3600) / 60))
+        HIPHASE_DURATION_SEC=$((HIPHASE_DURATION % 60))
+        
+        echo "================================================"
+        echo "✅ HIPHASE ANALYSIS COMPLETED SUCCESSFULLY"
+        echo "================================================"
+        echo "⏱️  Execution Time: ${HIPHASE_DURATION_HOUR}h ${HIPHASE_DURATION_MIN}m ${HIPHASE_DURATION_SEC}s"
+        echo "💾 Remaining Disk Space: $(df -h /scratch | tail -n 1 | awk '{print $4}')"
+        echo "================================================"
 
         # Copy all outputs to output folder
         echo "Copying output files to $output_folder..."
@@ -213,7 +251,7 @@ steps:
         cp "$sample_id.haplotagged.bam" "$output_folder/"
         cp "$sample_id.haplotagged.bam.bai" "$output_folder/"
         
-                # Copy phase statistics files
+        # Copy phase statistics files
         cp "$sample_id.$REF_NAME.hiphase.stats.tsv" "$output_folder/"
         cp "$sample_id.$REF_NAME.hiphase.blocks.tsv" "$output_folder/"
         gzip "$sample_id.$REF_NAME.hiphase.haplotags.tsv"
@@ -230,8 +268,11 @@ steps:
         rm -f "$output_folder/$(basename "$aligned_bam")"
         rm -f "$output_folder/$(basename "$aligned_bam_index")"        
         
+        echo "*************************"
         echo "HiPhase VCF phasing and BAM haplotagging completed successfully"
-        echo "Output files copied to: $output_folder" 
+        echo "Space on agent: $(df -h /scratch | tail -n 1 | awk '{print $4}')"
+        echo "Output files copied to: $output_folder"
+        echo "*************************" 
         
   - name: update_sample_catalog
     description: Add HiPhase Output to Sample Catalog

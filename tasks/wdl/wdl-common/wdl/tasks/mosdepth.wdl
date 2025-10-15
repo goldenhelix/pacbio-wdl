@@ -38,7 +38,7 @@ task mosdepth {
     depth_distribution_plot: {
       name: "Depth distribution plot"
     }
-    stat_mean_depth: {
+    stat_depth_mean: {
       name: "Mean depth"
     }
     inferred_sex: {
@@ -88,7 +88,8 @@ task mosdepth {
 
     # plot depth distribution
     cat << EOF > plot_depth_distribution.py
-    import pandas as pd, seaborn as sns, matplotlib.pyplot as plt, numpy as np
+    import pandas as pd, seaborn as sns, matplotlib, matplotlib.pyplot as plt, numpy as np
+    matplotlib.use('Agg')
     sns.set_theme(style='darkgrid')
     df = pd.read_csv(
       '~{sample_id}.regions.bed.gz',

@@ -34,10 +34,6 @@ steps:
   args:
       - |- # shell
         set -eu pipefail
-
-        # Extract task name from current working directory (temporary until this is defined in RC2)
-        # TASK_NAME=$(basename "$(dirname "$(dirname "$(dirname "$(dirname "$PWD")")")")")
-        echo "Task name: $TASK_NAME"
         
         # Function to handle miniwdl failure
         handle_miniwdl_failure() {
@@ -49,7 +45,7 @@ steps:
         }
         
         # Set up resource paths based on resources_path
-        PB_RESOURCES_DIR="${WORKSPACE_DIR}/${RESOURCES_PATH}/hifi-wdl-resources-v3.0.0"
+        PB_RESOURCES_DIR="${WORKSPACE_DIR}/${RESOURCES_PATH}/hifi-wdl-resources-v3.1.0"
 
         # Set environment variables for miniwdl
         export MINIWDL__SCHEDULER__CONTAINER_BACKEND=udocker
@@ -81,6 +77,16 @@ steps:
         LOCAL_REF_FASTA="/scratch/$(basename "$REF_FASTA")"
         LOCAL_REF_INDEX="/scratch/$(basename "$REF_INDEX")"
         
+        echo "*************************"
+        echo "Starting pbmm2 alignment for $sample_id"
+        echo "Space on agent: $(df -h /scratch | tail -n 1 | awk '{print $4}')"
+        echo "Input Parameters:"
+        echo "  - sample_id: $sample_id"
+        echo "  - bam: $bam"
+        echo "  - output_folder: $output_folder"
+        echo "  - cache_udocker_images: $cache_udocker_images"
+        echo "*************************"
+
         # Pull udocker layers from cache if requested
         if [ -d "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}" ]; then
           echo "Pulling udocker image from cache..."
@@ -89,31 +95,51 @@ steps:
             { echo "Failed to copy udocker cache to /scratch/.udocker; will pull layers instead"; }
         fi
         
-        # Create JSON structure for pbmm2.wdl inputs. If max_reads_per_chunk is >
-        # 0, then work is done to create sub-sets of the input to "scatter" to
-        # multiple alignment tasks, but that is not helpful on a single instance
-        cat > /scratch/inputs.json << EOF
-        {
-            "pbmm2.sample_id": "$sample_id",
-            "pbmm2.bam": "$bam",
-            "pbmm2.max_reads_per_chunk": 0,
-            "pbmm2.ref_fasta": "$LOCAL_REF_FASTA",
-            "pbmm2.ref_index": "$LOCAL_REF_INDEX",
-            "pbmm2.ref_name": "GRCh38",
+        # Generate pbmm2 input JSON using jq
+        echo "================================================"
+        echo "🚀 STARTING PBMM2 ALIGNMENT"
+        echo "================================================"
+        echo "📅 Server Time: $(date)"
+        echo "📁 Input Files:"
+        echo "  - HiFi BAM: $(basename "$bam")"
+        echo "  - Reference FASTA: $(basename "$LOCAL_REF_FASTA")"
+        echo "  - Reference FASTA Index: $(basename "$LOCAL_REF_INDEX")"
+        echo "⚙️  Configuration:"
+        echo "  - Threads: $AGENT_CPU_CORES"
+        echo "  - Memory: ${AGENT_MEMORY_GB}G"
+        echo "  - Max Reads Per Chunk: 0 (no scattering)"
+        echo "================================================"
+        
+        # Record start time
+        PBMM2_START_TIME=$(date +%s)
+        
+        jq -n \
+          --arg sample_id "$sample_id" \
+          --arg bam "$bam" \
+          --argjson max_reads_per_chunk 0 \
+          --arg ref_fasta "$LOCAL_REF_FASTA" \
+          --arg ref_index "$LOCAL_REF_INDEX" \
+          --arg ref_name "GRCh38" \
+          '{
+            "pbmm2.sample_id": $sample_id,
+            "pbmm2.bam": $bam,
+            "pbmm2.max_reads_per_chunk": $max_reads_per_chunk,
+            "pbmm2.ref_fasta": $ref_fasta,
+            "pbmm2.ref_index": $ref_index,
+            "pbmm2.ref_name": $ref_name,
             "pbmm2.default_runtime_attributes": {
-                "backend": "HPC",
-                "preemptible_tries": 0,
-                "max_retries": 3,
-                "zones": "",
-                "cpuPlatform": "",
-                "gpuType": "",
-                "container_registry": "quay.io/pacbio"
+              "backend": "HPC",
+              "preemptible_tries": 0,
+              "max_retries": 3,
+              "zones": "",
+              "cpuPlatform": "",
+              "gpuType": "",
+              "container_registry": "quay.io/pacbio"
             }
-        }
-        EOF
-        cat /scratch/inputs.json
+          }' > /scratch/inputs.json
 
         # Run miniwdl and capture exit code, but don't exit on failure
+        echo "Running pbmm2 alignment..."
         set +e
         miniwdl run \
           "${TASK_DIR}/wdl/wdl-common/wdl/workflows/pbmm2/pbmm2.wdl" \
@@ -124,6 +150,20 @@ steps:
         
         MINIWDL_EXIT_CODE=$?
         set -e
+
+        # Post-execution logging for pbmm2
+        PBMM2_END_TIME=$(date +%s)
+        PBMM2_DURATION=$((PBMM2_END_TIME - PBMM2_START_TIME))
+        PBMM2_DURATION_HOUR=$((PBMM2_DURATION / 3600))
+        PBMM2_DURATION_MIN=$(((PBMM2_DURATION % 3600) / 60))
+        PBMM2_DURATION_SEC=$((PBMM2_DURATION % 60))
+        
+        echo "================================================"
+        echo "✅ PBMM2 ALIGNMENT COMPLETED SUCCESSFULLY"
+        echo "================================================"
+        echo "⏱️  Execution Time: ${PBMM2_DURATION_HOUR}h ${PBMM2_DURATION_MIN}m ${PBMM2_DURATION_SEC}s"
+        echo "💾 Remaining Disk Space: $(df -h /scratch | tail -n 1 | awk '{print $4}')"
+        echo "================================================"
 
         # Copy udocker cache to output folder
         if [ "$cache_udocker_images" = true ] && [ ! -d "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}" ]; then
@@ -140,5 +180,8 @@ steps:
           handle_miniwdl_failure $MINIWDL_EXIT_CODE
         fi
         
+        echo "*************************"
         echo "pbmm2 alignment completed successfully"
+        echo "Space on agent: $(df -h /scratch | tail -n 1 | awk '{print $4}')"
         echo "Output files copied to: $output_folder"
+        echo "*************************"

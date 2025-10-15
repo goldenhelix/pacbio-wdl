@@ -47,7 +47,7 @@ steps:
       set -eu pipefail
 
       # Set up resource path
-      PB_RESOURCES_DIR="${WORKSPACE_DIR}/${RESOURCES_PATH}/hifi-wdl-resources-v3.0.0"
+      PB_RESOURCES_DIR="${WORKSPACE_DIR}/${RESOURCES_PATH}/hifi-wdl-resources-v3.1.0"
       # TASK_NAME=$(basename "$(dirname "$(dirname "$(dirname "$(dirname "$PWD")")")")")
       
       # Ensure TASK_NAME is set for debug capture
@@ -201,45 +201,91 @@ steps:
       LOCAL_SMALL_VARIANT_VCF="/scratch/$(basename "${small_variant_vcf}")"
       LOCAL_SMALL_VARIANT_VCF_INDEX="/scratch/$(basename "${small_variant_vcf_index}")"
 
-      # Create JSON structure for sawfish_discover inputs
-      cat > /scratch/sawfish_discover_inputs.json << EOF
-      {
-        "sawfish_discover.sample_id": "$sample_id",
-        "sawfish_discover.sex": "$sex",
-        "sawfish_discover.aligned_bam": "$LOCAL_BAM",
-        "sawfish_discover.aligned_bam_index": "$LOCAL_BAM_INDEX",
-        "sawfish_discover.ref_fasta": "$LOCAL_REF_FASTA",
-        "sawfish_discover.ref_index": "$LOCAL_REF_INDEX",
-        "sawfish_discover.exclude_bed": "$LOCAL_EXCLUDE_BED",
-        "sawfish_discover.exclude_bed_index": "$LOCAL_EXCLUDE_BED_INDEX",
-        "sawfish_discover.expected_male_bed": "$LOCAL_EXPECTED_MALE_BED",
-        "sawfish_discover.expected_female_bed": "$LOCAL_EXPECTED_FEMALE_BED",
-        "sawfish_discover.small_variant_vcf": "$LOCAL_SMALL_VARIANT_VCF",
-        "sawfish_discover.small_variant_vcf_index": "$LOCAL_SMALL_VARIANT_VCF_INDEX",
-        "sawfish_discover.out_prefix": "${sample_id}",
-        "sawfish_discover.runtime_attributes": {
-          "backend": "HPC",
-          "preemptible_tries": 0,
-          "max_retries": 1,
-          "zones": "",
-          "cpuPlatform": "",
-          "gpuType": "",
-          "container_registry": "quay.io/pacbio"
-        }
-      }
-      EOF
-      cat /scratch/sawfish_discover_inputs.json
+      echo "*************************"
+      echo "Starting Sawfish structural variant analysis for $sample_id"
+      echo "Space on agent: $(df -h /scratch | tail -n 1 | awk '{print $4}')"
+      echo "Input Parameters:"
+      echo "  - sample_id: $sample_id"
+      echo "  - aligned_bam: $aligned_bam"
+      echo "  - small_variant_vcf: $small_variant_vcf"
+      echo "  - sex: $sex"
+      echo "  - output_folder: $output_folder"
+      echo "  - cache_udocker_images: $cache_udocker_images"
+      echo "*************************"
+
+      # Step 1: Run Sawfish Discover
+      echo "================================================"
+      echo "🚀 STARTING SAWFISH DISCOVER"
+      echo "================================================"
+      echo "📅 Server Time: $(date)"
+      echo "📁 Input Files:"
+      echo "  - Aligned BAM: $(basename "$LOCAL_BAM")"
+      echo "  - Aligned BAM Index: $(basename "$LOCAL_BAM_INDEX")"
+      echo "  - Small Variant VCF: $(basename "$LOCAL_SMALL_VARIANT_VCF")"
+      echo "  - Reference FASTA: $(basename "$LOCAL_REF_FASTA")"
+      echo "  - Reference FASTA Index: $(basename "$LOCAL_REF_INDEX")"
+      echo "  - Exclude BED: $(basename "$LOCAL_EXCLUDE_BED")"
+      echo "  - Expected Male BED: $(basename "$LOCAL_EXPECTED_MALE_BED")"
+      echo "  - Expected Female BED: $(basename "$LOCAL_EXPECTED_FEMALE_BED")"
+      echo "⚙️  Configuration:"
+      echo "  - Threads: $AGENT_CPU_CORES"
+      echo "  - Memory: ${AGENT_MEMORY_GB}G"
+      echo "  - Sex: $sex"
+      echo "================================================"
+      
+      # Record start time
+      SAWFISH_DISCOVER_START_TIME=$(date +%s)
+
+      # Generate Sawfish discover input JSON using jq
+      jq -n \
+        --arg sample_id "$sample_id" \
+        --arg sex "$sex" \
+        --arg aligned_bam "$LOCAL_BAM" \
+        --arg aligned_bam_index "$LOCAL_BAM_INDEX" \
+        --arg ref_fasta "$LOCAL_REF_FASTA" \
+        --arg ref_index "$LOCAL_REF_INDEX" \
+        --arg exclude_bed "$LOCAL_EXCLUDE_BED" \
+        --arg exclude_bed_index "$LOCAL_EXCLUDE_BED_INDEX" \
+        --arg expected_male_bed "$LOCAL_EXPECTED_MALE_BED" \
+        --arg expected_female_bed "$LOCAL_EXPECTED_FEMALE_BED" \
+        --arg small_variant_vcf "$LOCAL_SMALL_VARIANT_VCF" \
+        --arg small_variant_vcf_index "$LOCAL_SMALL_VARIANT_VCF_INDEX" \
+        --arg out_prefix "$sample_id" \
+        '{
+          "sawfish_discover.sample_id": $sample_id,
+          "sawfish_discover.sex": $sex,
+          "sawfish_discover.aligned_bam": $aligned_bam,
+          "sawfish_discover.aligned_bam_index": $aligned_bam_index,
+          "sawfish_discover.ref_fasta": $ref_fasta,
+          "sawfish_discover.ref_index": $ref_index,
+          "sawfish_discover.exclude_bed": $exclude_bed,
+          "sawfish_discover.exclude_bed_index": $exclude_bed_index,
+          "sawfish_discover.expected_male_bed": $expected_male_bed,
+          "sawfish_discover.expected_female_bed": $expected_female_bed,
+          "sawfish_discover.small_variant_vcf": $small_variant_vcf,
+          "sawfish_discover.small_variant_vcf_index": $small_variant_vcf_index,
+          "sawfish_discover.out_prefix": $out_prefix,
+          "sawfish_discover.runtime_attributes": {
+            "backend": "HPC",
+            "preemptible_tries": 0,
+            "max_retries": 1,
+            "zones": "",
+            "cpuPlatform": "",
+            "gpuType": "",
+            "container_registry": "quay.io/pacbio"
+          }
+        }' > /scratch/sawfish_discover_inputs.json
 
       # Run sawfish_discover with miniwdl
-      echo "Running sawfish_discover..."
+      echo "Running Sawfish discover..."
       set +e
-      miniwdl run \
+      SAWFISH_DISCOVER_OUTPUT=$(miniwdl run \
         --task sawfish_discover \
         "${TASK_DIR}/wdl/wdl-common/wdl/tasks/sawfish.wdl" \
         --dir /scratch \
         --runtime-cpu-max=$AGENT_CPU_CORES \
         --runtime-memory-max=${AGENT_MEMORY_GB}G \
-        -i /scratch/sawfish_discover_inputs.json
+        -i /scratch/sawfish_discover_inputs.json 2>/dev/null)
       SAWFISH_DISCOVER_EXIT_CODE=$?
       set -e
 
@@ -248,78 +294,87 @@ steps:
         handle_miniwdl_failure $SAWFISH_DISCOVER_EXIT_CODE
       fi
 
-      echo "sawfish_discover completed successfully"
+      # Post-execution logging for Sawfish discover
+      SAWFISH_DISCOVER_END_TIME=$(date +%s)
+      SAWFISH_DISCOVER_DURATION=$((SAWFISH_DISCOVER_END_TIME - SAWFISH_DISCOVER_START_TIME))
+      SAWFISH_DISCOVER_DURATION_HOUR=$((SAWFISH_DISCOVER_DURATION / 3600))
+      SAWFISH_DISCOVER_DURATION_MIN=$(((SAWFISH_DISCOVER_DURATION % 3600) / 60))
+      SAWFISH_DISCOVER_DURATION_SEC=$((SAWFISH_DISCOVER_DURATION % 60))
+      
+      echo "================================================"
+      echo "✅ SAWFISH DISCOVER COMPLETED SUCCESSFULLY"
+      echo "================================================"
+      echo "⏱️  Execution Time: ${SAWFISH_DISCOVER_DURATION_HOUR}h ${SAWFISH_DISCOVER_DURATION_MIN}m ${SAWFISH_DISCOVER_DURATION_SEC}s"
+      echo "💾 Remaining Disk Space: $(df -h /scratch | tail -n 1 | awk '{print $4}')"
+      echo "================================================"
 
-      # tree /scratch/
-
-      # We don't need to process the outputs here, we are only using this as inputs to the next step
-      # bash "$TASK_DIR/process-outputs.sh" "$output_folder" "${sample_id}" 
+      # Extract discover_tar from captured output
+      DISCOVER_TAR=$(echo "$SAWFISH_DISCOVER_OUTPUT" | jq -r '.outputs."sawfish_discover.discover_tar"')
       
-      # Get the discover_tar output from sawfish_discover using outputs.json
-      # First try to get it from the _LAST symlink (primary approach)
-      DISCOVER_TAR=""
-      if [ -f "/scratch/_LAST/outputs.json" ]; then
-        DISCOVER_TAR=$(jq -r '.["sawfish_discover.discover_tar"]' /scratch/_LAST/outputs.json)
-        echo "discover_tar from _LAST/outputs.json: $DISCOVER_TAR"
-      fi
-      
-      # If primary approach failed, try alternative approach by finding the most recent sawfish_discover directory
       if [ -z "$DISCOVER_TAR" ] || [ "$DISCOVER_TAR" = "null" ]; then
-        echo "Primary approach failed, trying alternative approach..."
-        
-        # Find the most recent sawfish_discover output directory
-        SAWFISH_DISCOVER_DIR=$(find /scratch -maxdepth 1 -name "*_sawfish_discover" -type d | sort | tail -n 1)
-        
-        if [ -n "$SAWFISH_DISCOVER_DIR" ] && [ -f "$SAWFISH_DISCOVER_DIR/outputs.json" ]; then
-          DISCOVER_TAR=$(jq -r '.["sawfish_discover.discover_tar"]' "$SAWFISH_DISCOVER_DIR/outputs.json")
-          echo "discover_tar from $SAWFISH_DISCOVER_DIR/outputs.json: $DISCOVER_TAR"
-        fi
-      fi
-      
-      # Final validation
-      if [ -z "$DISCOVER_TAR" ] || [ "$DISCOVER_TAR" = "null" ]; then
-        echo "Error: Could not find discover_tar output from sawfish_discover using both approaches"
-        echo "Attempted to read from:"
-        echo "  - /scratch/_LAST/outputs.json"
-        echo "  - Most recent sawfish_discover directory"
+        echo "Error: Could not extract discover_tar from Sawfish discover output"
+        echo "DEBUG: Full SAWFISH_DISCOVER_OUTPUT content:"
+        echo "$SAWFISH_DISCOVER_OUTPUT"
         exit 1
       fi
       
       echo "Found discover_tar: $DISCOVER_TAR"
 
-      # Create JSON structure for sawfish_call inputs
-      cat > /scratch/sawfish_call_inputs.json << EOF
-      {
-        "sawfish_call.sample_ids": ["$sample_id"],
-        "sawfish_call.discover_tars": ["$DISCOVER_TAR"],
-        "sawfish_call.aligned_bams": ["$LOCAL_BAM"],
-        "sawfish_call.aligned_bam_indices": ["$LOCAL_BAM_INDEX"],
-        "sawfish_call.ref_fasta": "$LOCAL_REF_FASTA",
-        "sawfish_call.ref_index": "$LOCAL_REF_INDEX",
-        "sawfish_call.out_prefix": "${sample_id}.structural_variants",
-        "sawfish_call.runtime_attributes": {
-          "backend": "HPC",
-          "preemptible_tries": 0,
-          "max_retries": 3,
-          "zones": "",
-          "cpuPlatform": "",
-          "gpuType": "",
-          "container_registry": "quay.io/pacbio"
-        }
-      }
-      EOF
-      cat /scratch/sawfish_call_inputs.json
+      # Step 2: Run Sawfish Call
+      echo "================================================"
+      echo "🚀 STARTING SAWFISH CALL"
+      echo "================================================"
+      echo "📅 Server Time: $(date)"
+      echo "📁 Input Files:"
+      echo "  - Discover Tar: $(basename "$DISCOVER_TAR")"
+      echo "  - Aligned BAM: $(basename "$LOCAL_BAM")"
+      echo "  - Reference FASTA: $(basename "$LOCAL_REF_FASTA")"
+      echo "⚙️  Configuration:"
+      echo "  - Threads: $AGENT_CPU_CORES"
+      echo "  - Memory: ${AGENT_MEMORY_GB}G"
+      echo "================================================"
+      
+      # Record start time
+      SAWFISH_CALL_START_TIME=$(date +%s)
+
+      # Generate Sawfish call input JSON using jq
+      jq -n \
+        --argjson sample_ids "[\"$sample_id\"]" \
+        --argjson discover_tars "[\"$DISCOVER_TAR\"]" \
+        --argjson aligned_bams "[\"$LOCAL_BAM\"]" \
+        --argjson aligned_bam_indices "[\"$LOCAL_BAM_INDEX\"]" \
+        --arg ref_fasta "$LOCAL_REF_FASTA" \
+        --arg ref_index "$LOCAL_REF_INDEX" \
+        --arg out_prefix "${sample_id}.structural_variants" \
+        '{
+          "sawfish_call.sample_ids": $sample_ids,
+          "sawfish_call.discover_tars": $discover_tars,
+          "sawfish_call.aligned_bams": $aligned_bams,
+          "sawfish_call.aligned_bam_indices": $aligned_bam_indices,
+          "sawfish_call.ref_fasta": $ref_fasta,
+          "sawfish_call.ref_index": $ref_index,
+          "sawfish_call.out_prefix": $out_prefix,
+          "sawfish_call.runtime_attributes": {
+            "backend": "HPC",
+            "preemptible_tries": 0,
+            "max_retries": 3,
+            "zones": "",
+            "cpuPlatform": "",
+            "gpuType": "",
+            "container_registry": "quay.io/pacbio"
+          }
+        }' > /scratch/sawfish_call_inputs.json
 
       # Run sawfish_call with miniwdl
-      echo "Running sawfish_call..."
+      echo "Running Sawfish call..."
       set +e
-      miniwdl run \
+      SAWFISH_CALL_OUTPUT=$(miniwdl run \
         --task sawfish_call \
         "${TASK_DIR}/wdl/wdl-common/wdl/tasks/sawfish.wdl" \
         --dir /scratch \
         --runtime-cpu-max=$AGENT_CPU_CORES \
         --runtime-memory-max=${AGENT_MEMORY_GB}G \
-        -i /scratch/sawfish_call_inputs.json
+        -i /scratch/sawfish_call_inputs.json 2>/dev/null)
       SAWFISH_CALL_EXIT_CODE=$?
       set -e
 
@@ -328,7 +383,21 @@ steps:
         handle_miniwdl_failure $SAWFISH_CALL_EXIT_CODE
       fi
 
-      echo "sawfish_call completed successfully"
+      # Post-execution logging for Sawfish call
+      SAWFISH_CALL_END_TIME=$(date +%s)
+      SAWFISH_CALL_DURATION=$((SAWFISH_CALL_END_TIME - SAWFISH_CALL_START_TIME))
+      SAWFISH_CALL_DURATION_HOUR=$((SAWFISH_CALL_DURATION / 3600))
+      SAWFISH_CALL_DURATION_MIN=$(((SAWFISH_CALL_DURATION % 3600) / 60))
+      SAWFISH_CALL_DURATION_SEC=$((SAWFISH_CALL_DURATION % 60))
+      
+      echo "================================================"
+      echo "✅ SAWFISH CALL COMPLETED SUCCESSFULLY"
+      echo "================================================"
+      echo "⏱️  Execution Time: ${SAWFISH_CALL_DURATION_HOUR}h ${SAWFISH_CALL_DURATION_MIN}m ${SAWFISH_CALL_DURATION_SEC}s"
+      echo "💾 Remaining Disk Space: $(df -h /scratch | tail -n 1 | awk '{print $4}')"
+      echo "================================================"
+
+      # Copy output files to output folder
       bash "$TASK_DIR/process-outputs.sh" "$output_folder" "${sample_id}"
 
       # Check if the double-named file exists and rename it to canonical name
@@ -357,5 +426,8 @@ steps:
         cp -r /scratch/.udocker/layers /scratch/.udocker/repos "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}" 2>/dev/null || true
       fi
 
+      echo "*************************"
       echo "Sawfish structural variant discovery and calling completed successfully"
+      echo "Space on agent: $(df -h /scratch | tail -n 1 | awk '{print $4}')"
       echo "Output files copied to: $output_folder"
+      echo "*************************"

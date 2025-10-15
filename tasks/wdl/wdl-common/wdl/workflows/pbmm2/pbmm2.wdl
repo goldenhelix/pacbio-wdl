@@ -204,7 +204,6 @@ task split_input_bam {
   }
 
   runtime {
-    # GHI: Added tag for hash
     docker: "~{runtime_attributes.container_registry}/pbtk:3.5.0_build1"
     cpu: threads
     memory: mem_gb + " GiB"
@@ -242,6 +241,12 @@ task pbmm2_align_wgs {
     strip_kinetics: {
       name: "Strip kinetics tags"
     }
+    keep_unmapped: {
+      name: "Keep unmapped reads"
+    }
+    min_length: {
+      name: " Minimum mapped read length in basepairs."
+    }
     runtime_attributes: {
       name: "Runtime attribute structure"
     }
@@ -262,6 +267,8 @@ task pbmm2_align_wgs {
     String ref_name
 
     Boolean strip_kinetics = true
+    Boolean keep_unmapped  = true
+    Int     min_length     = 50
 
     RuntimeAttributes runtime_attributes
   }
@@ -269,6 +276,8 @@ task pbmm2_align_wgs {
   Int threads   = 32
   Int mem_gb    = ceil(threads * 4)
   Int disk_size = ceil(size(bam, "GB") * 2 + size(ref_fasta, "GB") + 70)
+
+  String movie = basename(bam, ".bam")
 
   command <<<
     set -euo pipefail
@@ -283,18 +292,16 @@ task pbmm2_align_wgs {
       --log-level INFO \
       --sort \
       ~{true='--strip' false='' strip_kinetics} \
-      --unmapped \
+      ~{true='--unmapped' false='' keep_unmapped} \
+      --min-length ~{min_length} \
       ~{ref_fasta} \
       ~{bam} \
-      aligned.bam
-
-    mv --verbose aligned.bam ~{sample_id}.aligned.bam
-    mv --verbose aligned.bam.bai ~{sample_id}.aligned.bam.bai
+      ~{sample_id}.~{movie}.~{ref_name}.aligned.bam
   >>>
 
   output {
-    File aligned_bam       = "~{sample_id}.aligned.bam"
-    File aligned_bam_index = "~{sample_id}.aligned.bam.bai"
+    File aligned_bam       = "~{sample_id}.~{movie}.~{ref_name}.aligned.bam"
+    File aligned_bam_index = "~{sample_id}.~{movie}.~{ref_name}.aligned.bam.bai"
   }
 
   runtime {

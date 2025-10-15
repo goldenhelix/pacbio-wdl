@@ -1,5 +1,5 @@
 name: Secondary Analysis Stats
-description: "Generate BAM statistics, TRGT coverage dropouts, small variant statistics, structural variant statistics, and CpG methylation analysis"
+description: "Generate BAM statistics, TRGT coverage dropouts, small variant statistics, and structural variant statistics"
 
 agent_requirements:
   cpu_cores: 8
@@ -35,7 +35,7 @@ steps:
         set -eu pipefail
 
         # Set up resource path
-        PB_RESOURCES_DIR="${WORKSPACE_DIR}/${RESOURCES_PATH}/hifi-wdl-resources-v3.0.0"
+        PB_RESOURCES_DIR="${WORKSPACE_DIR}/${RESOURCES_PATH}/hifi-wdl-resources-v3.1.0"
         # TASK_NAME=$(basename "$(dirname "$(dirname "$(dirname "$(dirname "$PWD")")")")")
 
         # Function to handle miniwdl failure
@@ -57,7 +57,7 @@ steps:
         REF_NAME="GRCh38"
         REF_FASTA="${PB_RESOURCES_DIR}/GRCh38/human_GRCh38_no_alt_analysis_set.fasta"
         REF_INDEX="${PB_RESOURCES_DIR}/GRCh38/human_GRCh38_no_alt_analysis_set.fasta.fai"
-        TRGT_BED="${PB_RESOURCES_DIR}/GRCh38/trgt/adotto_strchive_20250626.hg38.bed.gz"
+        TRGT_BED="${PB_RESOURCES_DIR}/GRCh38/trgt/adotto_strchive_20250827.hg38.bed.gz"
 
         # Find index files
         haplotagged_bam_index="${haplotagged_bam}.bai"
@@ -162,32 +162,54 @@ steps:
 
         echo "*************************"
         echo "Starting secondary analysis statistics for $sample_id"
+        echo "Space on agent: $(df -h /scratch | tail -n 1 | awk '{print $4}')"
+        echo "Input Parameters:"
+        echo "  - sample_id: $sample_id"
+        echo "  - haplotagged_bam: $haplotagged_bam"
+        echo "  - output_folder: $output_folder"
+        echo "  - cache_udocker_images: $cache_udocker_images"
         echo "*************************"
 
         # Step 1: Run BAM statistics
-        echo "Step 1: Running BAM statistics..."
+        echo "================================================"
+        echo "🚀 STARTING BAM STATISTICS"
+        echo "================================================"
+        echo "📅 Server Time: $(date)"
+        echo "📁 Input Files:"
+        echo "  - Haplotagged BAM: $(basename "$LOCAL_BAM")"
+        echo "  - Haplotagged BAM Index: $(basename "$LOCAL_BAM_INDEX")"
+        echo "⚙️  Configuration:"
+        echo "  - Threads: $AGENT_CPU_CORES"
+        echo "  - Memory: ${AGENT_MEMORY_GB}G"
+        echo "================================================"
         
-        # Create JSON structure for bam_stats inputs
-        cat > /scratch/bam_stats_inputs.json << EOF
-        {
-          "bam_stats.sample_id": "$sample_id",
-          "bam_stats.ref_name": "$REF_NAME",
-          "bam_stats.bam": "$LOCAL_BAM",
-          "bam_stats.bam_index": "$LOCAL_BAM_INDEX",
-          "bam_stats.runtime_attributes": {
-            "backend": "HPC",
-            "preemptible_tries": 0,
-            "max_retries": 1,
-            "zones": "",
-            "cpuPlatform": "",
-            "gpuType": "",
-            "container_registry": "quay.io/pacbio"
-          }
-        }
-        EOF
-        cat /scratch/bam_stats_inputs.json
+        # Record start time
+        BAM_STATS_START_TIME=$(date +%s)
+        
+        # Generate BAM stats input JSON using jq
+        jq -n \
+          --arg sample_id "$sample_id" \
+          --arg ref_name "$REF_NAME" \
+          --arg bam "$LOCAL_BAM" \
+          --arg bam_index "$LOCAL_BAM_INDEX" \
+          '{
+            "bam_stats.sample_id": $sample_id,
+            "bam_stats.ref_name": $ref_name,
+            "bam_stats.bam": $bam,
+            "bam_stats.bam_index": $bam_index,
+            "bam_stats.runtime_attributes": {
+              "backend": "HPC",
+              "preemptible_tries": 0,
+              "max_retries": 1,
+              "zones": "",
+              "cpuPlatform": "",
+              "gpuType": "",
+              "container_registry": "quay.io/pacbio"
+            }
+          }' > /scratch/bam_stats_inputs.json
 
         # Run bam_stats with miniwdl
+        echo "Running BAM statistics..."
         set +e
         miniwdl run \
           --task bam_stats \
@@ -204,35 +226,64 @@ steps:
           handle_miniwdl_failure $BAM_STATS_EXIT_CODE
         fi
 
-        echo "BAM statistics completed successfully"
+        # Post-execution logging for BAM stats
+        BAM_STATS_END_TIME=$(date +%s)
+        BAM_STATS_DURATION=$((BAM_STATS_END_TIME - BAM_STATS_START_TIME))
+        BAM_STATS_DURATION_HOUR=$((BAM_STATS_DURATION / 3600))
+        BAM_STATS_DURATION_MIN=$(((BAM_STATS_DURATION % 3600) / 60))
+        BAM_STATS_DURATION_SEC=$((BAM_STATS_DURATION % 60))
+        
+        echo "================================================"
+        echo "✅ BAM STATISTICS COMPLETED SUCCESSFULLY"
+        echo "================================================"
+        echo "⏱️  Execution Time: ${BAM_STATS_DURATION_HOUR}h ${BAM_STATS_DURATION_MIN}m ${BAM_STATS_DURATION_SEC}s"
+        echo "💾 Remaining Disk Space: $(df -h /scratch | tail -n 1 | awk '{print $4}')"
+        echo "================================================"
 
         # Copy output of bam_stats to output folder
         bash "$TASK_DIR/process-outputs.sh" "$output_folder" "${sample_id}" 
 
         # Step 2: Run TRGT coverage dropouts
-        echo "Step 2: Running TRGT coverage dropouts..."
-
-        # Create JSON structure for coverage_dropouts inputs
-        cat > /scratch/coverage_dropouts_inputs.json << EOF
-        {
-          "coverage_dropouts.aligned_bam": "$LOCAL_BAM",
-          "coverage_dropouts.aligned_bam_index": "$LOCAL_BAM_INDEX",
-          "coverage_dropouts.trgt_bed": "$LOCAL_TRGT_BED",
-          "coverage_dropouts.out_prefix": "${sample_id}",
-          "coverage_dropouts.runtime_attributes": {
-            "backend": "HPC",
-            "preemptible_tries": 0,
-            "max_retries": 1,
-            "zones": "",
-            "cpuPlatform": "",
-            "gpuType": "",
-            "container_registry": "quay.io/pacbio"
-          }
-        }
-        EOF
-        cat /scratch/coverage_dropouts_inputs.json
+        echo "================================================"
+        echo "🚀 STARTING TRGT COVERAGE DROPOUTS"
+        echo "================================================"
+        echo "📅 Server Time: $(date)"
+        echo "📁 Input Files:"
+        echo "  - Haplotagged BAM: $(basename "$LOCAL_BAM")"
+        echo "  - Haplotagged BAM Index: $(basename "$LOCAL_BAM_INDEX")"
+        echo "  - TRGT BED: $(basename "$LOCAL_TRGT_BED")"
+        echo "⚙️  Configuration:"
+        echo "  - Threads: $AGENT_CPU_CORES"
+        echo "  - Memory: ${AGENT_MEMORY_GB}G"
+        echo "================================================"
+        
+        # Record start time
+        COVERAGE_DROPOUTS_START_TIME=$(date +%s)
+        
+        # Generate TRGT coverage dropouts input JSON using jq
+        jq -n \
+          --arg aligned_bam "$LOCAL_BAM" \
+          --arg aligned_bam_index "$LOCAL_BAM_INDEX" \
+          --arg trgt_bed "$LOCAL_TRGT_BED" \
+          --arg out_prefix "$sample_id" \
+          '{
+            "coverage_dropouts.aligned_bam": $aligned_bam,
+            "coverage_dropouts.aligned_bam_index": $aligned_bam_index,
+            "coverage_dropouts.trgt_bed": $trgt_bed,
+            "coverage_dropouts.out_prefix": $out_prefix,
+            "coverage_dropouts.runtime_attributes": {
+              "backend": "HPC",
+              "preemptible_tries": 0,
+              "max_retries": 1,
+              "zones": "",
+              "cpuPlatform": "",
+              "gpuType": "",
+              "container_registry": "quay.io/pacbio"
+            }
+          }' > /scratch/coverage_dropouts_inputs.json
 
         # Run coverage_dropouts with miniwdl
+        echo "Running TRGT coverage dropouts..."
         set +e
         miniwdl run \
           --task coverage_dropouts \
@@ -249,35 +300,63 @@ steps:
           handle_miniwdl_failure $COVERAGE_DROPOUTS_EXIT_CODE
         fi
 
-        echo "TRGT coverage dropouts completed successfully"
+        # Post-execution logging for TRGT coverage dropouts
+        COVERAGE_DROPOUTS_END_TIME=$(date +%s)
+        COVERAGE_DROPOUTS_DURATION=$((COVERAGE_DROPOUTS_END_TIME - COVERAGE_DROPOUTS_START_TIME))
+        COVERAGE_DROPOUTS_DURATION_HOUR=$((COVERAGE_DROPOUTS_DURATION / 3600))
+        COVERAGE_DROPOUTS_DURATION_MIN=$(((COVERAGE_DROPOUTS_DURATION % 3600) / 60))
+        COVERAGE_DROPOUTS_DURATION_SEC=$((COVERAGE_DROPOUTS_DURATION % 60))
+        
+        echo "================================================"
+        echo "✅ TRGT COVERAGE DROPOUTS COMPLETED SUCCESSFULLY"
+        echo "================================================"
+        echo "⏱️  Execution Time: ${COVERAGE_DROPOUTS_DURATION_HOUR}h ${COVERAGE_DROPOUTS_DURATION_MIN}m ${COVERAGE_DROPOUTS_DURATION_SEC}s"
+        echo "💾 Remaining Disk Space: $(df -h /scratch | tail -n 1 | awk '{print $4}')"
+        echo "================================================"
 
         # Copy output of coverage_dropouts to output folder
         bash "$TASK_DIR/process-outputs.sh" "$output_folder" "${sample_id}" 
 
         # Step 3: Run bcftools stats and ROH on small variants
-        echo "Step 3: Running bcftools stats and ROH on small variants..."
-
-        # Create JSON structure for bcftools_stats_roh_small_variants inputs
-        cat > /scratch/bcftools_stats_roh_inputs.json << EOF
-        {
-          "bcftools_stats_roh_small_variants.sample_id": "$sample_id",
-          "bcftools_stats_roh_small_variants.vcf": "$LOCAL_SMALL_VARIANT_VCF",
-          "bcftools_stats_roh_small_variants.ref_fasta": "$LOCAL_REF_FASTA",
-          "bcftools_stats_roh_small_variants.ref_name": "$REF_NAME",
-          "bcftools_stats_roh_small_variants.runtime_attributes": {
-            "backend": "HPC",
-            "preemptible_tries": 0,
-            "max_retries": 1,
-            "zones": "",
-            "cpuPlatform": "",
-            "gpuType": "",
-            "container_registry": "quay.io/pacbio"
-          }
-        }
-        EOF
-        cat /scratch/bcftools_stats_roh_inputs.json
+        echo "================================================"
+        echo "🚀 STARTING BCFTOOLS STATS AND ROH"
+        echo "================================================"
+        echo "📅 Server Time: $(date)"
+        echo "📁 Input Files:"
+        echo "  - Small Variant VCF: $(basename "$LOCAL_SMALL_VARIANT_VCF")"
+        echo "  - Reference FASTA: $(basename "$LOCAL_REF_FASTA")"
+        echo "⚙️  Configuration:"
+        echo "  - Threads: $AGENT_CPU_CORES"
+        echo "  - Memory: ${AGENT_MEMORY_GB}G"
+        echo "================================================"
+        
+        # Record start time
+        BCFTOOLS_STATS_ROH_START_TIME=$(date +%s)
+        
+        # Generate bcftools stats ROH input JSON using jq
+        jq -n \
+          --arg sample_id "$sample_id" \
+          --arg vcf "$LOCAL_SMALL_VARIANT_VCF" \
+          --arg ref_fasta "$LOCAL_REF_FASTA" \
+          --arg ref_name "$REF_NAME" \
+          '{
+            "bcftools_stats_roh_small_variants.sample_id": $sample_id,
+            "bcftools_stats_roh_small_variants.vcf": $vcf,
+            "bcftools_stats_roh_small_variants.ref_fasta": $ref_fasta,
+            "bcftools_stats_roh_small_variants.ref_name": $ref_name,
+            "bcftools_stats_roh_small_variants.runtime_attributes": {
+              "backend": "HPC",
+              "preemptible_tries": 0,
+              "max_retries": 1,
+              "zones": "",
+              "cpuPlatform": "",
+              "gpuType": "",
+              "container_registry": "quay.io/pacbio"
+            }
+          }' > /scratch/bcftools_stats_roh_inputs.json
 
         # Run bcftools_stats_roh_small_variants with miniwdl
+        echo "Running bcftools stats and ROH..."
         set +e
         miniwdl run \
           --task bcftools_stats_roh_small_variants \
@@ -294,32 +373,56 @@ steps:
           handle_miniwdl_failure $BCFTOOLS_STATS_ROH_EXIT_CODE
         fi
 
-        echo "bcftools stats and ROH completed successfully"
+        # Post-execution logging for bcftools stats ROH
+        BCFTOOLS_STATS_ROH_END_TIME=$(date +%s)
+        BCFTOOLS_STATS_ROH_DURATION=$((BCFTOOLS_STATS_ROH_END_TIME - BCFTOOLS_STATS_ROH_START_TIME))
+        BCFTOOLS_STATS_ROH_DURATION_HOUR=$((BCFTOOLS_STATS_ROH_DURATION / 3600))
+        BCFTOOLS_STATS_ROH_DURATION_MIN=$(((BCFTOOLS_STATS_ROH_DURATION % 3600) / 60))
+        BCFTOOLS_STATS_ROH_DURATION_SEC=$((BCFTOOLS_STATS_ROH_DURATION % 60))
+        
+        echo "================================================"
+        echo "✅ BCFTOOLS STATS AND ROH COMPLETED SUCCESSFULLY"
+        echo "================================================"
+        echo "⏱️  Execution Time: ${BCFTOOLS_STATS_ROH_DURATION_HOUR}h ${BCFTOOLS_STATS_ROH_DURATION_MIN}m ${BCFTOOLS_STATS_ROH_DURATION_SEC}s"
+        echo "💾 Remaining Disk Space: $(df -h /scratch | tail -n 1 | awk '{print $4}')"
+        echo "================================================"
 
         # Copy output of bcftools_stats_roh_small_variants to output folder
         bash "$TASK_DIR/process-outputs.sh" "$output_folder" "${sample_id}" 
 
         # Step 4: Run structural variant statistics
-        echo "Step 4: Running structural variant statistics..."
-
-        # Create JSON structure for sv_stats inputs
-        cat > /scratch/sv_stats_inputs.json << EOF
-        {
-          "sv_stats.vcf": "$LOCAL_SV_VCF",
-          "sv_stats.runtime_attributes": {
-            "backend": "HPC",
-            "preemptible_tries": 0,
-            "max_retries": 1,
-            "zones": "",
-            "cpuPlatform": "",
-            "gpuType": "",
-            "container_registry": "quay.io/pacbio"
-          }
-        }
-        EOF
-        cat /scratch/sv_stats_inputs.json
+        echo "================================================"
+        echo "🚀 STARTING STRUCTURAL VARIANT STATISTICS"
+        echo "================================================"
+        echo "📅 Server Time: $(date)"
+        echo "📁 Input Files:"
+        echo "  - Structural Variant VCF: $(basename "$LOCAL_SV_VCF")"
+        echo "⚙️  Configuration:"
+        echo "  - Threads: $AGENT_CPU_CORES"
+        echo "  - Memory: ${AGENT_MEMORY_GB}G"
+        echo "================================================"
+        
+        # Record start time
+        SV_STATS_START_TIME=$(date +%s)
+        
+        # Generate SV stats input JSON using jq
+        jq -n \
+          --arg vcf "$LOCAL_SV_VCF" \
+          '{
+            "sv_stats.vcf": $vcf,
+            "sv_stats.runtime_attributes": {
+              "backend": "HPC",
+              "preemptible_tries": 0,
+              "max_retries": 1,
+              "zones": "",
+              "cpuPlatform": "",
+              "gpuType": "",
+              "container_registry": "quay.io/pacbio"
+            }
+          }' > /scratch/sv_stats_inputs.json
 
         # Run sv_stats with miniwdl
+        echo "Running structural variant statistics..."
         set +e
         miniwdl run \
           --task sv_stats \
@@ -336,55 +439,22 @@ steps:
           handle_miniwdl_failure $SV_STATS_EXIT_CODE
         fi
 
-        echo "Structural variant statistics completed successfully"
-        # Copy output of sv_stats to output folder
-        bash "$TASK_DIR/process-outputs.sh" "$output_folder" "${sample_id}" 
-
-        # Step 5: Run CpG methylation analysis
-        echo "Step 5: Running CpG methylation analysis..."
-
-        # Create JSON structure for cpg_pileup inputs
-        cat > /scratch/cpg_pileup_inputs.json << EOF
-        {
-          "cpg_pileup.haplotagged_bam": "$LOCAL_BAM",
-          "cpg_pileup.haplotagged_bam_index": "$LOCAL_BAM_INDEX",
-          "cpg_pileup.out_prefix": "${sample_id}",
-          "cpg_pileup.ref_fasta": "$LOCAL_REF_FASTA",
-          "cpg_pileup.ref_index": "$LOCAL_REF_INDEX",
-          "cpg_pileup.runtime_attributes": {
-            "backend": "HPC",
-            "preemptible_tries": 0,
-            "max_retries": 1,
-            "zones": "",
-            "cpuPlatform": "",
-            "gpuType": "",
-            "container_registry": "quay.io/pacbio"
-          }
-        }
-        EOF
-        cat /scratch/cpg_pileup_inputs.json
-
-        # Run cpg_pileup with miniwdl
-        set +e
-        miniwdl run \
-          --task cpg_pileup \
-          "${TASK_DIR}/wdl/wdl-common/wdl/tasks/cpg_pileup.wdl" \
-          --dir /scratch \
-          --runtime-cpu-max=$AGENT_CPU_CORES \
-          --runtime-memory-max=${AGENT_MEMORY_GB}G \
-          -i /scratch/cpg_pileup_inputs.json
-        CPG_PILEUP_EXIT_CODE=$?
-        set -e
-
-        if [ $CPG_PILEUP_EXIT_CODE -ne 0 ]; then
-          echo "CpG methylation analysis failed with exit code $CPG_PILEUP_EXIT_CODE"
-          handle_miniwdl_failure $CPG_PILEUP_EXIT_CODE
-        fi
-
-        echo "CpG methylation analysis completed successfully"
+        # Post-execution logging for SV stats
+        SV_STATS_END_TIME=$(date +%s)
+        SV_STATS_DURATION=$((SV_STATS_END_TIME - SV_STATS_START_TIME))
+        SV_STATS_DURATION_HOUR=$((SV_STATS_DURATION / 3600))
+        SV_STATS_DURATION_MIN=$(((SV_STATS_DURATION % 3600) / 60))
+        SV_STATS_DURATION_SEC=$((SV_STATS_DURATION % 60))
         
-        # Copy output of cpg_pileup to output folder
-        bash "$TASK_DIR/process-outputs.sh" "$output_folder" "${sample_id}" 
+        echo "================================================"
+        echo "✅ STRUCTURAL VARIANT STATISTICS COMPLETED SUCCESSFULLY"
+        echo "================================================"
+        echo "⏱️  Execution Time: ${SV_STATS_DURATION_HOUR}h ${SV_STATS_DURATION_MIN}m ${SV_STATS_DURATION_SEC}s"
+        echo "💾 Remaining Disk Space: $(df -h /scratch | tail -n 1 | awk '{print $4}')"
+        echo "================================================"
+
+        # Copy output of sv_stats to output folder
+        bash "$TASK_DIR/process-outputs.sh" "$output_folder" "${sample_id}"
         
         # Copy udocker cache to output folder
         if [ "$cache_udocker_images" = true ] && [ ! -d "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}" ]; then
@@ -395,5 +465,6 @@ steps:
 
         echo "*************************"
         echo "Secondary analysis statistics completed successfully"
+        echo "Space on agent: $(df -h /scratch | tail -n 1 | awk '{print $4}')"
         echo "Output files copied to: $output_folder"
         echo "*************************"

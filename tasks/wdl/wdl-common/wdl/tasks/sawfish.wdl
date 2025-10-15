@@ -126,7 +126,7 @@ task sawfish_discover {
   }
 
   runtime {
-    docker: "~{runtime_attributes.container_registry}/sawfish:2.0.3_build1"
+    docker: "~{runtime_attributes.container_registry}/sawfish:2.1.1_build1"
     cpu: threads
     memory: mem_gb + " GiB"
     disk: disk_size + " GB"
@@ -185,13 +185,16 @@ task sawfish_call {
       name: "Copy number bedgraph"
     }
     depth_bw: {
-      name: "Depth bedgraph"
+      name: "Depth bigWig"
     }
     gc_bias_corrected_depth_bw: {
-      name: "GC bias corrected depth bedgraph"
+      name: "GC bias corrected depth bigWig"
     }
     maf_bw: {
-      name: "MAF bedgraph"
+      name: "MAF bigWig"
+    }
+    copynum_summary: {
+      name: "Copy number summary JSON"
     }
   }
 
@@ -275,6 +278,8 @@ task sawfish_call {
       && echo ${PREFIX}.gc_bias_corrected_depth.bw >> gc_bias_corrected_depth.bw.list
       mv --verbose ~{out_prefix}/samples/sample????_${sample_id}/maf.bw ${PREFIX}.maf.bw \
       && echo ${PREFIX}.maf.bw >> maf_bw.list
+      mv --verbose ~{out_prefix}/samples/sample????_${sample_id}/copynum.summary.json ${PREFIX}.copynum.summary.json \
+      && echo ${PREFIX}.copynum.summary.json >> copynum_summary.list
     done
 
     # shellcheck disable=SC2086,SC2048
@@ -289,10 +294,11 @@ task sawfish_call {
     Array[File] depth_bw                   = read_lines("depth_bw.list")
     Array[File] gc_bias_corrected_depth_bw = read_lines("gc_bias_corrected_depth.bw.list")
     Array[File] maf_bw                     = read_lines("maf_bw.list")
+    Array[File] copynum_summary            = read_lines("copynum_summary.list")
   }
 
   runtime {
-    docker: "~{runtime_attributes.container_registry}/sawfish:2.0.3_build1"
+    docker: "~{runtime_attributes.container_registry}/sawfish:2.1.1_build1"
     cpu: threads
     memory: mem_gb + " GiB"
     disk: disk_size + " GB"

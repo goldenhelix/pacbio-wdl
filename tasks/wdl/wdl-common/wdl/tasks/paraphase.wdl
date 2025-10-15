@@ -88,7 +88,7 @@ task paraphase {
   }
 
   runtime {
-    docker: "~{runtime_attributes.container_registry}/paraphase:3.3.2_build1"
+    docker: "~{runtime_attributes.container_registry}/paraphase:3.3.4_build1"
     cpu: threads
     memory: mem_gb + " GiB"
     disk: disk_size + " GB"

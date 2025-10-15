@@ -38,7 +38,7 @@ steps:
         set -eu pipefail
 
         # Set up resource path
-        PB_RESOURCES_DIR="${WORKSPACE_DIR}/${RESOURCES_PATH}/hifi-wdl-resources-v3.0.0"
+        PB_RESOURCES_DIR="${WORKSPACE_DIR}/${RESOURCES_PATH}/hifi-wdl-resources-v3.1.0"
         # TASK_NAME=$(basename "$(dirname "$(dirname "$(dirname "$(dirname "$PWD")")")")")
         
         # Ensure TASK_NAME is set for debug capture
@@ -117,26 +117,56 @@ steps:
         LOCAL_REF_FASTA="/scratch/$(basename "$REF_FASTA")"
         LOCAL_REF_INDEX="/scratch/$(basename "$REF_INDEX")"
 
-        # Create JSON structure for mitorsaw inputs
-        cat > /scratch/mitorsaw_inputs.json << EOF
-        {
-          "mitorsaw.aligned_bam": "$LOCAL_BAM",
-          "mitorsaw.aligned_bam_index": "$LOCAL_BAM_INDEX",
-          "mitorsaw.ref_fasta": "$LOCAL_REF_FASTA",
-          "mitorsaw.ref_index": "$LOCAL_REF_INDEX",
-          "mitorsaw.out_prefix": "${sample_id}",
-          "mitorsaw.runtime_attributes": {
-            "backend": "HPC",
-            "preemptible_tries": 0,
-            "max_retries": 1,
-            "zones": "",
-            "cpuPlatform": "",
-            "gpuType": "",
-            "container_registry": "quay.io/pacbio"
-          }
-        }
-        EOF
-        cat /scratch/mitorsaw_inputs.json
+        echo "*************************"
+        echo "Starting Mitorsaw mitochondrial variant and haplotype analysis for $sample_id"
+        echo "Space on agent: $(df -h /scratch | tail -n 1 | awk '{print $4}')"
+        echo "Input Parameters:"
+        echo "  - sample_id: $sample_id"
+        echo "  - aligned_bam: $aligned_bam"
+        echo "  - output_folder: $output_folder"
+        echo "  - cache_udocker_images: $cache_udocker_images"
+        echo "*************************"
+
+        echo "================================================"
+        echo "🚀 STARTING MITORSAW ANALYSIS"
+        echo "================================================"
+        echo "📅 Server Time: $(date)"
+        echo "📁 Input Files:"
+        echo "  - Aligned BAM: $(basename "$LOCAL_BAM") ($(ls -lh "$LOCAL_BAM" | awk '{print $5}'))"
+        echo "  - Aligned BAM Index: $(basename "$LOCAL_BAM_INDEX") ($(ls -lh "$LOCAL_BAM_INDEX" | awk '{print $5}'))"
+        echo "  - Reference FASTA: $(basename "$LOCAL_REF_FASTA") ($(ls -lh "$LOCAL_REF_FASTA" | awk '{print $5}'))"
+        echo "  - Reference FASTA Index: $(basename "$LOCAL_REF_INDEX") ($(ls -lh "$LOCAL_REF_INDEX" | awk '{print $5}'))"
+        echo "⚙️  Configuration:"
+        echo "  - Threads: $AGENT_CPU_CORES"
+        echo "  - Memory: ${AGENT_MEMORY_GB}G"
+        echo "================================================"
+        
+        # Record start time
+        MITORSAW_START_TIME=$(date +%s)
+
+        # Create JSON structure for mitorsaw inputs using jq
+        jq -n \
+          --arg aligned_bam "$LOCAL_BAM" \
+          --arg aligned_bam_index "$LOCAL_BAM_INDEX" \
+          --arg ref_fasta "$LOCAL_REF_FASTA" \
+          --arg ref_index "$LOCAL_REF_INDEX" \
+          --arg out_prefix "$sample_id" \
+          '{
+            "mitorsaw.aligned_bam": $aligned_bam,
+            "mitorsaw.aligned_bam_index": $aligned_bam_index,
+            "mitorsaw.ref_fasta": $ref_fasta,
+            "mitorsaw.ref_index": $ref_index,
+            "mitorsaw.out_prefix": $out_prefix,
+            "mitorsaw.runtime_attributes": {
+              "backend": "HPC",
+              "preemptible_tries": 0,
+              "max_retries": 1,
+              "zones": "",
+              "cpuPlatform": "",
+              "gpuType": "",
+              "container_registry": "quay.io/pacbio"
+            }
+          }' > /scratch/mitorsaw_inputs.json
 
         # Run mitorsaw with miniwdl
         echo "Running Mitorsaw..."
@@ -155,6 +185,20 @@ steps:
           echo "Mitorsaw failed with exit code $MITORSAW_EXIT_CODE"
           handle_miniwdl_failure $MITORSAW_EXIT_CODE
         fi
+
+        # Post-execution logging for Mitorsaw
+        MITORSAW_END_TIME=$(date +%s)
+        MITORSAW_DURATION=$((MITORSAW_END_TIME - MITORSAW_START_TIME))
+        MITORSAW_DURATION_HOUR=$((MITORSAW_DURATION / 3600))
+        MITORSAW_DURATION_MIN=$(((MITORSAW_DURATION % 3600) / 60))
+        MITORSAW_DURATION_SEC=$((MITORSAW_DURATION % 60))
+        
+        echo "================================================"
+        echo "✅ MITORSAW ANALYSIS COMPLETED SUCCESSFULLY"
+        echo "================================================"
+        echo "⏱️  Execution Time: ${MITORSAW_DURATION_HOUR}h ${MITORSAW_DURATION_MIN}m ${MITORSAW_DURATION_SEC}s"
+        echo "💾 Remaining Disk Space: $(df -h /scratch | tail -n 1 | awk '{print $4}')"
+        echo "================================================"
 
         echo "Mitorsaw completed successfully"
         
@@ -200,5 +244,14 @@ steps:
           cp -r /scratch/.udocker/layers /scratch/.udocker/repos "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}" 2>/dev/null || true
         fi
 
+        echo "*************************"
         echo "Mitorsaw mitochondrial variant and haplotype analysis completed successfully"
+        echo "Space on agent: $(df -h /scratch | tail -n 1 | awk '{print $4}')"
         echo "Output files copied to: $output_folder"
+        echo "📁 Output Files:"
+        for file in "$output_folder"/*; do
+          if [ -f "$file" ]; then
+            echo "  - $(basename "$file"): $(ls -lh "$file" | awk '{print $5}')"
+          fi
+        done
+        echo "*************************"

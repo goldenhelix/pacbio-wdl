@@ -50,7 +50,7 @@ steps:
         # Set up environment
 
         # Resources path
-        PB_RESOURCES_DIR="${WORKSPACE_DIR}/${RESOURCES_PATH}/hifi-wdl-resources-v3.0.0"
+        PB_RESOURCES_DIR="${WORKSPACE_DIR}/${RESOURCES_PATH}/hifi-wdl-resources-v3.1.0"
 
         # Set environment variables
         export MINIWDL__SCHEDULER__CONTAINER_BACKEND=udocker
@@ -95,6 +95,16 @@ steps:
         LOCAL_BAM="/scratch/$(basename "${aligned_bam}")"
         LOCAL_BAM_INDEX="/scratch/$(basename "${BAM_INDEX}")"
 
+        echo "*************************"
+        echo "Starting DeepVariant variant calling for $sample_id"
+        echo "Space on agent: $(df -h /scratch | tail -n 1 | awk '{print $4}')"
+        echo "Input Parameters:"
+        echo "  - sample_id: $sample_id"
+        echo "  - aligned_bam: $aligned_bam"
+        echo "  - output_folder: $output_folder"
+        echo "  - cache_udocker_images: $cache_udocker_images"
+        echo "*************************"
+
         # Pull udocker layers from cache if requested
         if [ -d "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}" ]; then
           echo "Pulling udocker image from cache..."
@@ -103,34 +113,54 @@ steps:
             { echo "Failed to copy udocker cache to /scratch/.udocker; will pull layers instead"; }
         fi
 
-        # Create JSON structure for deepvariant.wdl inputs
-        cat > /scratch/inputs.json << EOF
-        {
-            "deepvariant.sample_id": "$sample_id",
-            "deepvariant.aligned_bams": [
-              "$LOCAL_BAM"
-            ], 
-            "deepvariant.aligned_bam_indices": [
-              "$LOCAL_BAM_INDEX"
-            ],
-            "deepvariant.ref_fasta": "$LOCAL_REF_FASTA",
-            "deepvariant.ref_index": "$LOCAL_REF_INDEX",
-            "deepvariant.ref_name": "GRCh38",
-            "deepvariant.gpu": false,
+        # Generate DeepVariant input JSON using jq
+        echo "================================================"
+        echo "🚀 STARTING DEEPVARIANT VARIANT CALLING"
+        echo "================================================"
+        echo "📅 Server Time: $(date)"
+        echo "📁 Input Files:"
+        echo "  - Aligned BAM: $(basename "$LOCAL_BAM")"
+        echo "  - Aligned BAM Index: $(basename "$LOCAL_BAM_INDEX")"
+        echo "  - Reference FASTA: $(basename "$LOCAL_REF_FASTA")"
+        echo "  - Reference FASTA Index: $(basename "$LOCAL_REF_INDEX")"
+        echo "⚙️  Configuration:"
+        echo "  - Threads: $AGENT_CPU_CORES"
+        echo "  - Memory: ${AGENT_MEMORY_GB}G"
+        echo "  - GPU: false"
+        echo "================================================"
+        
+        # Record start time
+        DEEPVARIANT_START_TIME=$(date +%s)
+        
+        jq -n \
+          --arg sample_id "$sample_id" \
+          --argjson aligned_bams "[\"$LOCAL_BAM\"]" \
+          --argjson aligned_bam_indices "[\"$LOCAL_BAM_INDEX\"]" \
+          --arg ref_fasta "$LOCAL_REF_FASTA" \
+          --arg ref_index "$LOCAL_REF_INDEX" \
+          --arg ref_name "GRCh38" \
+          --argjson gpu false \
+          '{
+            "deepvariant.sample_id": $sample_id,
+            "deepvariant.aligned_bams": $aligned_bams,
+            "deepvariant.aligned_bam_indices": $aligned_bam_indices,
+            "deepvariant.ref_fasta": $ref_fasta,
+            "deepvariant.ref_index": $ref_index,
+            "deepvariant.ref_name": $ref_name,
+            "deepvariant.gpu": $gpu,
             "deepvariant.default_runtime_attributes": {
-                "backend": "HPC",
-                "preemptible_tries": 0,
-                "max_retries": 3,
-                "zones": "",
-                "cpuPlatform": "",
-                "gpuType": "",
-                "container_registry": "quay.io/pacbio"
+              "backend": "HPC",
+              "preemptible_tries": 0,
+              "max_retries": 3,
+              "zones": "",
+              "cpuPlatform": "",
+              "gpuType": "",
+              "container_registry": "quay.io/pacbio"
             }
-        }
-        EOF
-        cat /scratch/inputs.json
+          }' > /scratch/inputs.json
 
         # Run miniwdl and capture exit code, but don't exit on failure
+        echo "Running DeepVariant variant calling..."
         set +e
         miniwdl run \
           "${TASK_DIR}/wdl/wdl-common/wdl/workflows/deepvariant/deepvariant.wdl" \
@@ -139,6 +169,20 @@ steps:
         
         MINIWDL_EXIT_CODE=$?
         set -e
+        
+        # Post-execution logging for DeepVariant
+        DEEPVARIANT_END_TIME=$(date +%s)
+        DEEPVARIANT_DURATION=$((DEEPVARIANT_END_TIME - DEEPVARIANT_START_TIME))
+        DEEPVARIANT_DURATION_HOUR=$((DEEPVARIANT_DURATION / 3600))
+        DEEPVARIANT_DURATION_MIN=$(((DEEPVARIANT_DURATION % 3600) / 60))
+        DEEPVARIANT_DURATION_SEC=$((DEEPVARIANT_DURATION % 60))
+        
+        echo "================================================"
+        echo "✅ DEEPVARIANT VARIANT CALLING COMPLETED SUCCESSFULLY"
+        echo "================================================"
+        echo "⏱️  Execution Time: ${DEEPVARIANT_DURATION_HOUR}h ${DEEPVARIANT_DURATION_MIN}m ${DEEPVARIANT_DURATION_SEC}s"
+        echo "💾 Remaining Disk Space: $(df -h /scratch | tail -n 1 | awk '{print $4}')"
+        echo "================================================"
         
         # Copy udocker cache to output folder
         if [ "$cache_udocker_images" = true ] && [ ! -d "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}" ]; then
@@ -155,6 +199,9 @@ steps:
           handle_miniwdl_failure $MINIWDL_EXIT_CODE
         fi
         
+        echo "*************************"
         echo "DeepVariant variant calling completed successfully"
+        echo "Space on agent: $(df -h /scratch | tail -n 1 | awk '{print $4}')"
         echo "Output files copied to: $output_folder"
+        echo "*************************"
 
