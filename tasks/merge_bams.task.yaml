@@ -16,11 +16,16 @@ parameters:
     type: directory
     help: The folder containing the BAM files to merge.
 
-
   - name: cache_udocker_images
     label: Cache Udocker Image
     type: boolean
     value: true
+
+  - name: merge_failed_reads
+    label: Merge Failed Reads
+    type: boolean
+    value: false
+    help: If true, include BAM files containing 'baited_fail_reads' in the merge. If false, exclude them.
 
 steps:
   - name: merge_bams
@@ -35,12 +40,16 @@ steps:
           local exit_code=$1
           echo "MiniWDL run failed with exit code $exit_code"
           echo "Capturing debug information..."
-          bash "$TASK_DIR/miniwdl-debug-capture.sh" /scratch/_LAST "$input_folder" "$TASK_NAME"
+          bash "$TASK_DIR/utils/miniwdl-debug-capture.sh" /scratch/_LAST "$input_folder" "$TASK_NAME"
           exit $exit_code
         }
 
         # Find input BAM files
-        mapfile -t INPUT_BAMS < <(find "$input_folder" -name "${sample_id}.*.bam")
+        if [ "$merge_failed_reads" = "false" ]; then
+          mapfile -t INPUT_BAMS < <(find "$input_folder" -name "${sample_id}.*.bam" | grep -vi "baited_fail_reads" | grep -vi "paraphase")
+        else
+          mapfile -t INPUT_BAMS < <(find "$input_folder" -name "${sample_id}.*.bam" | grep -vi "paraphase")
+        fi
         
         # Check if no BAM files found
         if [ ${#INPUT_BAMS[@]} -eq 0 ]; then
@@ -51,8 +60,10 @@ steps:
         # Check if there is only one BAM file found
         if [ ${#INPUT_BAMS[@]} -eq 1 ]; then
           echo "Only one BAM file found, renaming to aligned.bam"
-          mv "${INPUT_BAMS[0]}" "${input_folder}/${sample_id}.aligned.bam"
-          mv "${INPUT_BAMS[0]}.bai" "${input_folder}/${sample_id}.aligned.bam.bai"
+          if [[ "$(basename "${INPUT_BAMS[0]}")" != "${sample_id}.aligned.bam" ]]; then
+            mv "${INPUT_BAMS[0]}" "${input_folder}/${sample_id}.aligned.bam"
+            mv "${INPUT_BAMS[0]}.bai" "${input_folder}/${sample_id}.aligned.bam.bai"
+          fi
           exit 0
         fi
 
@@ -81,17 +92,80 @@ steps:
         # Record start time
         MERGE_START_TIME=$(date +%s)
 
-        # Merge BAM files
-        cp "${INPUT_BAMS[@]}" /scratch/
-        mapfile -t LOCAL_BAMS < <(find /scratch/ -name "${sample_id}.*.bam")
-        samtools --version
-        samtools merge --verbosity 2 --threads "$AGENT_CPU_CORES" -c -p -o "/scratch/${sample_id}.aligned.bam" "${LOCAL_BAMS[@]}"
-        samtools index "/scratch/${sample_id}.aligned.bam"
-        cp "/scratch/${sample_id}.aligned.bam" "${input_folder}/${sample_id}.aligned.bam"
-        cp "/scratch/${sample_id}.aligned.bam.bai" "${input_folder}/${sample_id}.aligned.bam.bai"
-        rm -f "${INPUT_BAMS[@]}"
-        rm -f "${INPUT_BAMS[@]}.bai"
+        # Check available disk space before copying
+        AVAILABLE_SPACE=$(df -BG /scratch | tail -n 1 | awk '{print $4}' | sed 's/G//')
+        TOTAL_BAM_SIZE=0
+        for bam in "${INPUT_BAMS[@]}"; do
+          BAM_SIZE=$(stat -c%s "$bam" 2>/dev/null || echo "0")
+          TOTAL_BAM_SIZE=$((TOTAL_BAM_SIZE + BAM_SIZE))
+        done
+        TOTAL_BAM_SIZE_GB=$((TOTAL_BAM_SIZE / 1024 / 1024 / 1024))
+        # Need at least 2x space for input + output
+        REQUIRED_SPACE=$((TOTAL_BAM_SIZE_GB * 2))
+        
+        if [ "$AVAILABLE_SPACE" -lt "$REQUIRED_SPACE" ]; then
+          echo "ERROR: Insufficient disk space on /scratch"
+          echo "  Available: ${AVAILABLE_SPACE}G"
+          echo "  Required: ${REQUIRED_SPACE}G (2x input size for safety)"
+          exit 1
+        fi
 
+        # Copy files
+        echo "Copying BAM files to /scratch/..."
+        echo "File system diagnostics:"
+        echo "  Source location: $(dirname "${INPUT_BAMS[0]}" 2>/dev/null || echo "unknown")"
+        echo "  Source FS type: $(df -T "$(dirname "${INPUT_BAMS[0]}" 2>/dev/null || echo "/")" 2>/dev/null | tail -n 1 | awk '{print $2}' || echo "unknown")"
+        echo "  Scratch FS type: $(df -T /scratch 2>/dev/null | tail -n 1 | awk '{print $2}' || echo "unknown")"
+        echo ""
+        
+        # Copy files to /scratch, renaming with `.local`
+        LOCAL_BAMS=()
+        for bam in "${INPUT_BAMS[@]}"; do
+          local_bam="/scratch/$(basename "$bam").local.bam"
+          dd if="$bam" of="$local_bam" bs=1M conv=fsync status=progress > /dev/null 2>&1
+          LOCAL_BAMS+=("$local_bam")
+        done
+        echo "BAM files copied to /scratch with .local extension"
+        echo "BAM files:"
+        for bam in "${LOCAL_BAMS[@]}"; do
+          echo "  - $(basename "$bam"): $(ls -lh "$bam" | awk '{print $5}')"
+        done
+
+        echo "Merging BAM files..."
+        samtools merge -f --verbosity 3 -c -p -o "/scratch/${sample_id}.aligned.bam.local.tmp" "${LOCAL_BAMS[@]}"
+        rm -rf "${LOCAL_BAMS[@]}"
+
+        echo "Indexing merged BAM..."
+        samtools index "/scratch/${sample_id}.aligned.bam.local.tmp"
+        mv "/scratch/${sample_id}.aligned.bam.local.tmp" "${input_folder}/${sample_id}.aligned.bam"
+        mv "/scratch/${sample_id}.aligned.bam.local.tmp.bai" "${input_folder}/${sample_id}.aligned.bam.bai"
+
+        echo "Successfully merged and indexed BAM files"
+        echo "Merged BAM file: $(basename "${input_folder}/${sample_id}.aligned.bam"): $(ls -lh "${input_folder}/${sample_id}.aligned.bam" | awk '{print $5}')"
+        echo "Merged BAM index: $(basename "${input_folder}/${sample_id}.aligned.bam.bai"): $(ls -lh "${input_folder}/${sample_id}.aligned.bam.bai" | awk '{print $5}')"
+
+        # Delete input BAM files from input directory, excluding the output BAM
+        echo "Deleting input BAM files from input directory..."
+        output_bam_path="${input_folder}/${sample_id}.aligned.bam"
+        
+        for bam in "${INPUT_BAMS[@]}"; do
+          # Skip deletion if this file matches the output BAM
+          if [ "$bam" = "$output_bam_path" ]; then
+            echo "  - Skipping $(basename "$bam") (this is the output file)"
+            continue
+          fi
+          
+          if [ -f "$bam" ]; then
+            echo "  - Deleting $(basename "$bam")"
+            rm -f "$bam" || { echo "Warning: Failed to delete $bam"; }
+          fi
+          if [ -f "${bam}.bai" ]; then
+            echo "  - Deleting $(basename "${bam}.bai")"
+            rm -f "${bam}.bai" || { echo "Warning: Failed to delete ${bam}.bai"; }
+          fi
+        done
+        echo "Input BAM files deleted successfully"
+      
         # Post-execution logging
         MERGE_END_TIME=$(date +%s)
         MERGE_DURATION=$((MERGE_END_TIME - MERGE_START_TIME))
@@ -102,19 +176,8 @@ steps:
         echo "================================================"
         echo "✅ BAM MERGING COMPLETED SUCCESSFULLY"
         echo "================================================"
-        echo "⏱️  Execution Time: ${MERGE_DURATION_HOUR}h ${MERGE_DURATION_MIN}m ${MERGE_DURATION_SEC}s"
-        echo "💾 Remaining Disk Space: $(df -h /scratch | tail -n 1 | awk '{print $4}')"
+        echo "⏱️ Execution Time: ${MERGE_DURATION_HOUR}h ${MERGE_DURATION_MIN}m ${MERGE_DURATION_SEC}s"
         echo "📁 Output Files:"
         echo "  - $(basename "${input_folder}/${sample_id}.aligned.bam"): $(ls -lh "${input_folder}/${sample_id}.aligned.bam" | awk '{print $5}')"
         echo "  - $(basename "${input_folder}/${sample_id}.aligned.bam.bai"): $(ls -lh "${input_folder}/${sample_id}.aligned.bam.bai" | awk '{print $5}')"
         echo "================================================"
-
-        echo "*************************"
-        echo "BAM merging completed successfully"
-        echo "Space on agent: $(df -h /scratch | tail -n 1 | awk '{print $4}')"
-        echo "Output files:"
-        echo "  - ${input_folder}/${sample_id}.aligned.bam"
-        echo "  - ${input_folder}/${sample_id}.aligned.bam.bai"
-        echo "*************************"
-        
-        exit 0

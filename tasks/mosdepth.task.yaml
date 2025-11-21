@@ -114,14 +114,14 @@ steps:
       fi
 
       # Process all files and values in outputs.json
-      bash "$TASK_DIR/process-outputs.sh" "$output_folder" "$sample_id" 
+      bash "$TASK_DIR/utils/process-outputs.sh" "$output_folder" "$sample_id" 
 
       # Function to handle miniwdl failure
       handle_miniwdl_failure() {
         local exit_code=$1
         echo "MiniWDL run failed with exit code $exit_code"
         echo "Capturing debug information..."
-        bash "$TASK_DIR/miniwdl-debug-capture.sh" /scratch/_LAST "$output_folder" "$TASK_NAME"
+        bash "$TASK_DIR/utils/miniwdl-debug-capture.sh" /scratch/_LAST "$output_folder" "$TASK_NAME"
         exit $exit_code
       }
 

@@ -50,13 +50,13 @@ steps:
           local exit_code=$1
           echo "MiniWDL run failed with exit code $exit_code"
           echo "Capturing debug information..."
-          bash "$TASK_DIR/miniwdl-debug-capture.sh" /scratch/_LAST "$output_folder"
+          bash "$TASK_DIR/utils/miniwdl-debug-capture.sh" /scratch/_LAST "$output_folder"
           exit $exit_code
         }
         
         # Set up resource paths based on resources_path
         BASE_DIR="$WORKSPACE_DIR/${RESOURCES_PATH}"
-        RESOURCES_DIR="$BASE_DIR/hifi-wdl-resources-v3.0.0"
+        RESOURCES_DIR="$BASE_DIR/hifi-wdl-resources-v3.1.0"
         REF_MAP_FILE="$RESOURCES_DIR/GRCh38.ref_map.v3p0p0.template.tsv"
         
         # Set environment variables for miniwdl
@@ -117,7 +117,7 @@ steps:
         fi
 
         # Process all files and values in outputs.json
-        bash "$TASK_DIR/process-outputs.sh" "$output_folder" "$sample_id" 
+        bash "$TASK_DIR/utils/process-outputs.sh" "$output_folder" "$sample_id" 
 
         if [ $MINIWDL_EXIT_CODE -ne 0 ]; then
           echo "MiniWDL run failed with exit code $MINIWDL_EXIT_CODE"

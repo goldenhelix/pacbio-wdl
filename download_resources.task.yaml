@@ -2,8 +2,8 @@ name: Download PacBio Reference Data Resources
 description: Download reference data bundle for PacificBiosciences/HiFi-human-WGS-WDL
 
 agent_requirements:
-  cpu_cores: 1
-  memory_gb: 1
+  cpu_cores: 0
+  memory_gb: 0
 
 parameters:
   - name: target_directory

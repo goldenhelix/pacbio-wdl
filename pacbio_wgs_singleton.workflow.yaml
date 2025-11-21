@@ -1,29 +1,62 @@
 name: PacBio WGS Singleton
 description: Run PacBio WGS analysis on a single sample.
+
+selected_requirements_configuration: Nominal Genomes
+requirements_configurations:
+  - name: Nominal Genomes
+    description: Standard requirements for typical genome analysis
+  - name: High Depth Genomes
+    description: Requirements for high depth genome sequencing
+
 stages:
+  - name: Prepare Directories
+    description: Prepare output directories
+    task_path: tasks/prepare_directories.task.yaml
+    depends_on: []
+
+    task_parameters:
+      - name: input_tsv
+        label: Batch TSV File
+        type: file
+        pattern_match:
+          - '*.tsv'
+        help: "The batch file containing a list of FASTQ or uBAM (unaligned BAM), including failed target uBAMs, files to align and their associated samples."
+
+      - name: folder_name
+        label: Folder Name
+        type: string
+        optional: true
+        help: "The name of the output folder. If left blank, the name of the folder containing the batch TSV file will be used."
+
+      - name: base_output_folder
+        label: Base Output Folder
+        type: directory
+        supports_location_mode: 'no_append'
+        persist_key: "pacbio_wgs.base_output_folder"
+        help: "The base output folder, where the output folder will be created, for the PacBio WGS analysis."
+
   - name: pbmm2 Alignment
     description: Align PacBio HiFi reads to a reference genome using pbmm2 aligner.
     task_path: tasks/pbmm2.task.yaml
-    depends_on: []
+    depends_on:
+      - Prepare Directories
 
-    glob_parameter:
-      label: uBAM Base Folder
+    batch_file_parameter:
+      label: HiFi Reads Alignment Files TSV
       path:
-        type: directory
-        supports_location_mode: 'read_only'
-      glob_ex: '*/*.bam'
-      output_parameters:
-        - task_parameter_name: sample_id
-          expression: '${1}'
-        - task_parameter_name: bam
-          expression: '${0}'
-      help: "The folder containing the uBAM file(s) to align. \nThe number of samples (and therefore the number of runs) is determined by the number of files matching the glob expression. \nSee the glob expression help section for help with writing glob expressions to match your data."
+        base_path:
+          type: stage
+          stage: Prepare Directories
+          parameter: input_tsv
+        file: ''
+      help: "The batch file containing a list of FASTQ or uBAM (unaligned BAM), including failed target uBAMs, files to align and their associated samples."
 
     task_parameters:
       - name: output_folder
         label: Output Folder
-        type: directory
-        supports_location_mode: 'no_append'
+        type: stage
+        stage: Prepare Directories
+        stage_parameter_expression: "${output_folder}"
 
       - name: cache_udocker_images
         label: Cache Udocker Image
@@ -46,7 +79,6 @@ stages:
       output_parameters:
         - task_parameter_name: sample_id
           expression: '${2}'
-      help: The folder containing the original uBAM files; used to determine the sample IDs. 
 
     task_parameters:
       - name: input_folder
@@ -165,18 +197,58 @@ stages:
         stage: Merge BAMs
         stage_parameter_expression: "${cache_udocker_images}"
 
+  - name: Merge in Failed Reads
+    description: Merge BAM files for a given sample. 
+    task_path: tasks/merge_bams.task.yaml
+    depends_on:
+      - Sawfish
+      - mosdepth
+      - Paraphase
+      - Mitorsaw
+
+    glob_parameter:
+      label: Input Folder
+      path:
+        type: stage
+        stage: pbmm2 Alignment
+        parameter: output_folder
+      glob_ex: '**/*.*.bam'
+      output_parameters:
+        - task_parameter_name: sample_id
+          expression: '${2}'
+
+    task_parameters:
+      - name: input_folder
+        label: Input Folder
+        type: stage
+        stage: Prepare Directories
+        stage_parameter_expression: "${output_folder}"
+        supports_location_mode: 'read_only'
+
+      - name: merge_failed_reads
+        label: Merge Failed Reads
+        type: stage
+        stage: Merge in Failed Reads
+        stage_parameter_expression: "true"
+
+      - name: cache_udocker_images
+        label: Cache Udocker Image
+        type: stage
+        stage: pbmm2 Alignment
+        stage_parameter_expression: "${cache_udocker_images}"
+        value: true
+
   - name: TRGT
     description: Genotype tandem repeats from aligned reads using TRGT.
     task_path: tasks/trgt.task.yaml
     depends_on:
-      - Merge BAMs
-      - mosdepth
+      - Merge in Failed Reads
 
     glob_parameter:
       label: Alignment Folder
       path: 
         type: stage
-        stage: Merge BAMs
+        stage: Merge in Failed Reads
         parameter: input_folder
       glob_ex: '**/*.aligned.bam'
       output_parameters:
@@ -189,7 +261,7 @@ stages:
       - name: output_folder
         label: Output Folder
         type: stage
-        stage: Merge BAMs
+        stage: Merge in Failed Reads
         stage_parameter_expression: "${input_folder}"
 
       - name: cache_udocker_images
@@ -267,8 +339,6 @@ stages:
     description: Phase VCFs and haplotag BAMs with HiPhase.
     task_path: tasks/hiphase.task.yaml
     depends_on:
-      - DeepVariant
-      - Sawfish
       - TRGT
       
     glob_parameter:
@@ -288,7 +358,7 @@ stages:
       - name: output_folder
         label: Output Folder
         type: stage
-        stage: pbmm2 Alignment
+        stage: Prepare Directories
         stage_parameter_expression: "${output_folder}"
 
   - name: CpG and MethBat Analysis
@@ -346,7 +416,7 @@ stages:
       - name: output_folder
         label: Output Folder
         type: stage
-        stage: pbmm2 Alignment
+        stage: Prepare Directories
         stage_parameter_expression: "${output_folder}"
 
       - name: cache_udocker_images
@@ -378,7 +448,7 @@ stages:
       - name: output_folder
         label: Output Folder
         type: stage
-        stage: pbmm2 Alignment
+        stage: Prepare Directories
         stage_parameter_expression: "${output_folder}"
         
       - name: cache_udocker_images
@@ -419,7 +489,7 @@ stages:
       - name: base_path
         label: Input Folder
         type: stage
-        stage: pbmm2 Alignment
+        stage: Prepare Directories
         stage_parameter_expression: "${output_folder}"
 
       - name: project_name

@@ -5,16 +5,34 @@ agent_requirements:
   cpu_cores: 48
   memory_gb: 96
 
+
+alternative_agent_requirements:
+  Nominal Genomes:
+    cpu_cores: 48
+    memory_gb: 96
+    description: Standard requirements for typical genome analysis
+  High Depth Genomes:
+    cpu_cores: 64
+    memory_gb: 128
+    description: Requirements for high depth genome sequencing
+
 parameters:
   - name: sample_id
     label: Sample ID
     type: string
     optional: false
 
-  - name: bam
-    label: HiFi reads (BAM)
-    help: Unaligned BAM (uBAM) PacBio HiFi reads
+  - name: alignment_file
+    label: HiFi Reads Alignment File
+    help: FASTQ or uBAM (unaligned BAM) PacBio HiFi Reads
     type: file
+
+  - name: failed_target
+    label: Failed Target?
+    type: boolean
+    optional: false
+    value: false
+    help: "Indicates if the target uBAM failed to align."
 
   - name: output_folder
     label: Output Folder
@@ -35,12 +53,15 @@ steps:
       - |- # shell
         set -eu pipefail
         
+        # Source utility functions
+        source "$TASK_DIR/utils/utils.sh"
+        
         # Function to handle miniwdl failure
         handle_miniwdl_failure() {
           local exit_code=$1
           echo "MiniWDL run failed with exit code $exit_code"
           echo "Capturing debug information..."
-          bash "$TASK_DIR/miniwdl-debug-capture.sh" /scratch/_LAST "$output_folder" "$TASK_NAME"
+          bash "$TASK_DIR/utils/miniwdl-debug-capture.sh" /scratch/_LAST "$output_folder" "$TASK_NAME"
           exit $exit_code
         }
         
@@ -82,9 +103,10 @@ steps:
         echo "Space on agent: $(df -h /scratch | tail -n 1 | awk '{print $4}')"
         echo "Input Parameters:"
         echo "  - sample_id: $sample_id"
-        echo "  - bam: $bam"
+        echo "  - alignment_file: $alignment_file"
         echo "  - output_folder: $output_folder"
         echo "  - cache_udocker_images: $cache_udocker_images"
+        echo "  - failed_target: $failed_target"
         echo "*************************"
 
         # Pull udocker layers from cache if requested
@@ -95,89 +117,389 @@ steps:
             { echo "Failed to copy udocker cache to /scratch/.udocker; will pull layers instead"; }
         fi
         
-        # Generate pbmm2 input JSON using jq
-        echo "================================================"
-        echo "🚀 STARTING PBMM2 ALIGNMENT"
-        echo "================================================"
-        echo "📅 Server Time: $(date)"
-        echo "📁 Input Files:"
-        echo "  - HiFi BAM: $(basename "$bam")"
-        echo "  - Reference FASTA: $(basename "$LOCAL_REF_FASTA")"
-        echo "  - Reference FASTA Index: $(basename "$LOCAL_REF_INDEX")"
-        echo "⚙️  Configuration:"
-        echo "  - Threads: $AGENT_CPU_CORES"
-        echo "  - Memory: ${AGENT_MEMORY_GB}G"
-        echo "  - Max Reads Per Chunk: 0 (no scattering)"
-        echo "================================================"
-        
-        # Record start time
-        PBMM2_START_TIME=$(date +%s)
-        
-        jq -n \
-          --arg sample_id "$sample_id" \
-          --arg bam "$bam" \
-          --argjson max_reads_per_chunk 0 \
-          --arg ref_fasta "$LOCAL_REF_FASTA" \
-          --arg ref_index "$LOCAL_REF_INDEX" \
-          --arg ref_name "GRCh38" \
-          '{
-            "pbmm2.sample_id": $sample_id,
-            "pbmm2.bam": $bam,
-            "pbmm2.max_reads_per_chunk": $max_reads_per_chunk,
-            "pbmm2.ref_fasta": $ref_fasta,
-            "pbmm2.ref_index": $ref_index,
-            "pbmm2.ref_name": $ref_name,
-            "pbmm2.default_runtime_attributes": {
-              "backend": "HPC",
-              "preemptible_tries": 0,
-              "max_retries": 3,
-              "zones": "",
-              "cpuPlatform": "",
-              "gpuType": "",
-              "container_registry": "quay.io/pacbio"
-            }
-          }' > /scratch/inputs.json
+        if [ "$failed_target" = false ]; then
 
-        # Run miniwdl and capture exit code, but don't exit on failure
-        echo "Running pbmm2 alignment..."
-        set +e
-        miniwdl run \
-          "${TASK_DIR}/wdl/wdl-common/wdl/workflows/pbmm2/pbmm2.wdl" \
-          --dir /scratch \
-          --runtime-cpu-max=$AGENT_CPU_CORES \
-          --runtime-memory-max=${AGENT_MEMORY_GB}G \
-          -i /scratch/inputs.json 
-        
-        MINIWDL_EXIT_CODE=$?
-        set -e
+          # Generate pbmm2 input JSON using jq
+          echo "================================================"
+          echo "🚀 STARTING PBMM2 ALIGNMENT"
+          echo "================================================"
+          echo "📅 Server Time: $(date)"
+          echo "📁 Input Files:"
+          echo "  - HiFi Reads Alignment File: $(basename "$alignment_file")"
+          echo "  - Reference FASTA: $(basename "$LOCAL_REF_FASTA")"
+          echo "  - Reference FASTA Index: $(basename "$LOCAL_REF_INDEX")"
+          echo "⚙️  Configuration:"
+          echo "  - Threads: $AGENT_CPU_CORES"
+          echo "  - Memory: ${AGENT_MEMORY_GB}G"
+          echo "  - Max Reads Per Chunk: 0 (no scattering)"
+          echo "================================================"
+          
+          # Record start time
+          PBMM2_START_TIME=$(date +%s)
+          
+          jq -n \
+            --arg sample_id "$sample_id" \
+            --arg alignment_file "$alignment_file" \
+            --argjson max_reads_per_chunk 0 \
+            --arg ref_fasta "$LOCAL_REF_FASTA" \
+            --arg ref_index "$LOCAL_REF_INDEX" \
+            --arg ref_name "GRCh38" \
+            '{
+              "pbmm2.sample_id": $sample_id,
+              "pbmm2.bam": $alignment_file,
+              "pbmm2.max_reads_per_chunk": $max_reads_per_chunk,
+              "pbmm2.ref_fasta": $ref_fasta,
+              "pbmm2.ref_index": $ref_index,
+              "pbmm2.ref_name": $ref_name,
+              "pbmm2.default_runtime_attributes": {
+                "backend": "HPC",
+                "preemptible_tries": 0,
+                "max_retries": 3,
+                "zones": "",
+                "cpuPlatform": "",
+                "gpuType": "",
+                "container_registry": "quay.io/pacbio"
+              }
+            }' > /scratch/inputs.json
 
-        # Post-execution logging for pbmm2
-        PBMM2_END_TIME=$(date +%s)
-        PBMM2_DURATION=$((PBMM2_END_TIME - PBMM2_START_TIME))
-        PBMM2_DURATION_HOUR=$((PBMM2_DURATION / 3600))
-        PBMM2_DURATION_MIN=$(((PBMM2_DURATION % 3600) / 60))
-        PBMM2_DURATION_SEC=$((PBMM2_DURATION % 60))
-        
-        echo "================================================"
-        echo "✅ PBMM2 ALIGNMENT COMPLETED SUCCESSFULLY"
-        echo "================================================"
-        echo "⏱️  Execution Time: ${PBMM2_DURATION_HOUR}h ${PBMM2_DURATION_MIN}m ${PBMM2_DURATION_SEC}s"
-        echo "💾 Remaining Disk Space: $(df -h /scratch | tail -n 1 | awk '{print $4}')"
-        echo "================================================"
+          # Run miniwdl and capture exit code, but don't exit on failure
+          echo "Running pbmm2 alignment..."
+          set +e
+          miniwdl run \
+            "${TASK_DIR}/wdl/wdl-common/wdl/workflows/pbmm2/pbmm2.wdl" \
+            --dir /scratch \
+            --runtime-cpu-max=$AGENT_CPU_CORES \
+            --runtime-memory-max=${AGENT_MEMORY_GB}G \
+            -i /scratch/inputs.json 
+          
+          MINIWDL_EXIT_CODE=$?
+          set -e
 
-        # Copy udocker cache to output folder
-        if [ "$cache_udocker_images" = true ] && [ ! -d "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}" ]; then
-          echo "Copying udocker cache to resources folder..."
-          mkdir -p "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}"
-          cp -r /scratch/.udocker/layers /scratch/.udocker/repos "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}" 2>/dev/null || true
-        fi
+          # Post-execution logging for pbmm2
+          PBMM2_END_TIME=$(date +%s)
+          PBMM2_DURATION=$((PBMM2_END_TIME - PBMM2_START_TIME))
+          PBMM2_DURATION_HOUR=$((PBMM2_DURATION / 3600))
+          PBMM2_DURATION_MIN=$(((PBMM2_DURATION % 3600) / 60))
+          PBMM2_DURATION_SEC=$((PBMM2_DURATION % 60))
+          
+          echo "================================================"
+          echo "✅ PBMM2 ALIGNMENT COMPLETED SUCCESSFULLY"
+          echo "================================================"
+          echo "⏱️  Execution Time: ${PBMM2_DURATION_HOUR}h ${PBMM2_DURATION_MIN}m ${PBMM2_DURATION_SEC}s"
+          echo "💾 Remaining Disk Space: $(df -h /scratch | tail -n 1 | awk '{print $4}')"
+          echo "================================================"
 
-        # Process all files and values in outputs.json
-        bash "$TASK_DIR/process-outputs.sh" "$output_folder" "$sample_id" 
+          # Copy udocker cache to output folder
+          if [ "$cache_udocker_images" = true ] && [ ! -d "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}" ]; then
+            echo "Copying udocker cache to resources folder..."
+            mkdir -p "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}"
+            cp -r /scratch/.udocker/layers /scratch/.udocker/repos "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}" 2>/dev/null || true
+          fi
 
-        if [ $MINIWDL_EXIT_CODE -ne 0 ]; then
-          echo "MiniWDL run failed with exit code $MINIWDL_EXIT_CODE"
-          handle_miniwdl_failure $MINIWDL_EXIT_CODE
+          # Process all files and values in outputs.json
+          bash "$TASK_DIR/utils/process-outputs.sh" "$output_folder" "$sample_id" 
+
+          if [ $MINIWDL_EXIT_CODE -ne 0 ]; then
+            echo "MiniWDL run failed with exit code $MINIWDL_EXIT_CODE"
+            handle_miniwdl_failure $MINIWDL_EXIT_CODE
+          fi
+
+        else
+
+          # Process failed target uBAM; variation of normal alignment workflow
+          echo "================================================"
+          echo "🔧 PROCESSING FAILED TARGET REGIONS"
+          echo "================================================"
+          echo "📅 Server Time: $(date)"
+          echo "📁 Input Files:"
+          echo "  - Failed Target BAM: $(basename "$bam")"
+          echo "================================================"
+
+          # Set up TRGT BED file path
+          TRGT_BED="${PB_RESOURCES_DIR}/GRCh38/trgt/adotto_strchive_20250827.hg38.bed.gz"
+
+          # Verify TRGT BED file exists
+          if [ ! -f "$TRGT_BED" ]; then
+            echo "Error: TRGT BED file not found at $TRGT_BED"
+            echo "Please ensure the PacBio WDL resources have been downloaded using the Download PacBio Reference Data Resources task"
+            exit 1
+          fi
+
+          # Copy TRGT BED to /scratch
+          echo "Copying TRGT BED to /scratch..."
+          cp "$TRGT_BED" /scratch/
+          LOCAL_TRGT_BED="/scratch/$(basename "$TRGT_BED")"
+
+          # Step 0: Process TRGT catalog to generate fail_reads resources
+          echo "================================================"
+          echo "🚀 STEP 0: Processing TRGT catalog for fail_reads resources"
+          echo "================================================"
+
+          jq -n \
+            --arg trgt_catalog "$LOCAL_TRGT_BED" \
+            --arg ref_fasta "$LOCAL_REF_FASTA" \
+            --arg ref_index "$LOCAL_REF_INDEX" \
+            '{
+              "process_trgt_catalog.trgt_catalog": $trgt_catalog,
+              "process_trgt_catalog.ref_fasta": $ref_fasta,
+              "process_trgt_catalog.ref_index": $ref_index,
+              "process_trgt_catalog.default_runtime_attributes": {
+                "backend": "HPC",
+                "preemptible_tries": 0,
+                "max_retries": 3,
+                "zones": "",
+                "cpuPlatform": "",
+                "gpuType": "",
+                "container_registry": "quay.io/pacbio"
+              }
+            }' > /scratch/process_trgt_inputs.json
+
+          set +e
+          miniwdl run \
+            "${TASK_DIR}/wdl/process_trgt_catalog/process_trgt_catalog.wdl" \
+            --dir /scratch/process_trgt_step \
+            --runtime-cpu-max=$AGENT_CPU_CORES \
+            --runtime-memory-max=${AGENT_MEMORY_GB}G \
+            -i /scratch/process_trgt_inputs.json
+
+          PROCESS_TRGT_EXIT_CODE=$?
+          set -e
+
+          if [ $PROCESS_TRGT_EXIT_CODE -ne 0 ]; then
+            echo "Error: Process TRGT catalog step failed with exit code $PROCESS_TRGT_EXIT_CODE"
+            handle_miniwdl_failure $PROCESS_TRGT_EXIT_CODE
+          fi
+
+          # Extract outputs from process_trgt_catalog step
+          # Note: include_fail_reads_bed, fail_reads_bait_fasta, and fail_reads_bait_index are optional
+          FAIL_READS_BED=$(jq -r '.["process_trgt_catalog.include_fail_reads_bed"] // empty' /scratch/process_trgt_step/_LAST/outputs.json)
+          FAIL_READS_BAIT_FASTA=$(jq -r '.["process_trgt_catalog.fail_reads_bait_fasta"] // empty' /scratch/process_trgt_step/_LAST/outputs.json)
+          FAIL_READS_BAIT_INDEX=$(jq -r '.["process_trgt_catalog.fail_reads_bait_index"] // empty' /scratch/process_trgt_step/_LAST/outputs.json)
+
+          # Verify all required files exist (they're optional outputs)
+          if [ -z "$FAIL_READS_BED" ] || [ "$FAIL_READS_BED" = "null" ] || [ ! -f "$FAIL_READS_BED" ]; then
+            echo "Warning: fail_reads_bed not generated by process_trgt_catalog."
+            echo "This means no repeats in the TRGT catalog contain INCLUDE_FAIL_READS flag."
+            echo "Cannot process failed target - skipping fail_reads processing."
+            exit 0
+          fi
+
+          if [ -z "$FAIL_READS_BAIT_FASTA" ] || [ "$FAIL_READS_BAIT_FASTA" = "null" ] || [ ! -f "$FAIL_READS_BAIT_FASTA" ]; then
+            echo "Error: fail_reads_bait_fasta not generated by process_trgt_catalog."
+            echo "Cannot process failed target."
+            exit 1
+          fi
+
+          if [ -z "$FAIL_READS_BAIT_INDEX" ] || [ "$FAIL_READS_BAIT_INDEX" = "null" ] || [ ! -f "$FAIL_READS_BAIT_INDEX" ]; then
+            echo "Error: fail_reads_bait_index not generated by process_trgt_catalog."
+            echo "Cannot process failed target."
+            exit 1
+          fi
+
+          echo "✅ All fail_reads resources generated from TRGT catalog:"
+          echo "  - fail_reads_bed: $(basename "$FAIL_READS_BED")"
+          echo "  - fail_reads_bait_fasta: $(basename "$FAIL_READS_BAIT_FASTA")"
+          echo "  - fail_reads_bait_index: $(basename "$FAIL_READS_BAIT_INDEX")"
+
+          # Copy fail_reads resources to /scratch (they may already be there from the workflow)
+          # Use absolute paths - files are already in workflow output directory
+          LOCAL_FAIL_READS_BED="$FAIL_READS_BED"
+          LOCAL_FAIL_READS_BAIT_FASTA="$FAIL_READS_BAIT_FASTA"
+          LOCAL_FAIL_READS_BAIT_INDEX="$FAIL_READS_BAIT_INDEX"
+
+          # Record start time
+          FAIL_TARGET_START_TIME=$(date +%s)
+
+          # Step 1: Bait fail reads to bait reference
+          echo "================================================"
+          echo "🚀 STEP 1/3: Baiting fail reads to bait reference"
+          echo "================================================"
+          
+          jq -n \
+            --arg sample_id "$sample_id" \
+            --arg bam "$alignment_file" \
+            --arg ref_fasta "$LOCAL_FAIL_READS_BAIT_FASTA" \
+            --arg ref_index "$LOCAL_FAIL_READS_BAIT_INDEX" \
+            --arg ref_name "bait_ref" \
+            '{
+              "sample_id": $sample_id,
+              "bam": $bam,
+              "ref_fasta": $ref_fasta,
+              "ref_index": $ref_index,
+              "ref_name": $ref_name,
+              "keep_unmapped": false,
+              "min_length": 1000,
+              "runtime_attributes": {
+                "backend": "HPC",
+                "preemptible_tries": 0,
+                "max_retries": 3,
+                "zones": "",
+                "cpuPlatform": "",
+                "gpuType": "",
+                "container_registry": "quay.io/pacbio"
+              }
+            }' > /scratch/bait_inputs.json
+
+          set +e
+          BAIT_OUTPUTS=$(miniwdl run \
+            "${TASK_DIR}/wdl/wdl-common/wdl/workflows/pbmm2/pbmm2.wdl" \
+            --task pbmm2_align_wgs \
+            --dir /scratch/bait_step \
+            --runtime-cpu-max=$AGENT_CPU_CORES \
+            --runtime-memory-max=${AGENT_MEMORY_GB}G \
+            -i /scratch/bait_inputs.json)
+          BAIT_EXIT_CODE=$?
+          set -e
+
+          if [ $BAIT_EXIT_CODE -ne 0 ]; then
+            echo "Error: Bait step failed with exit code $BAIT_EXIT_CODE"
+            handle_miniwdl_failure $BAIT_EXIT_CODE
+          fi
+
+          # Extract output from bait step
+          BAITED_BAM=$(echo "$BAIT_OUTPUTS" | jq -r '.outputs."pbmm2_align_wgs.aligned_bam"')
+          BAITED_BAM_INDEX=$(echo "$BAIT_OUTPUTS" | jq -r '.outputs."pbmm2_align_wgs.aligned_bam_index"')
+
+          if [ ! -f "$BAITED_BAM" ]; then
+            echo "Error: Baited BAM file not found at $BAITED_BAM"
+            exit 1
+          fi
+
+          echo "✅ Step 1/3 completed: Baited BAM generated"
+
+          # Step 2: Align captured fail reads to main reference
+          echo "================================================"
+          echo "🚀 STEP 2/3: Aligning captured fail reads to main reference"
+          echo "================================================"
+
+          jq -n \
+            --arg sample_id "$sample_id" \
+            --arg bam "$BAITED_BAM" \
+            --arg ref_fasta "$LOCAL_REF_FASTA" \
+            --arg ref_index "$LOCAL_REF_INDEX" \
+            --arg ref_name "GRCh38" \
+            '{
+              "sample_id": $sample_id,
+              "bam": $bam,
+              "ref_fasta": $ref_fasta,
+              "ref_index": $ref_index,
+              "ref_name": $ref_name,
+              "keep_unmapped": false,
+              "min_length": 50,
+              "runtime_attributes": {
+                "backend": "HPC",
+                "preemptible_tries": 0,
+                "max_retries": 3,
+                "zones": "",
+                "cpuPlatform": "",
+                "gpuType": "",
+                "container_registry": "quay.io/pacbio"
+              }
+            }' > /scratch/align_inputs.json
+
+          set +e
+          ALIGN_OUTPUTS=$(miniwdl run \
+            "${TASK_DIR}/wdl/wdl-common/wdl/workflows/pbmm2/pbmm2.wdl" \
+            --task pbmm2_align_wgs \
+            --dir /scratch/align_step \
+            --runtime-cpu-max=$AGENT_CPU_CORES \
+            --runtime-memory-max=${AGENT_MEMORY_GB}G \
+            -i /scratch/align_inputs.json)
+          ALIGN_EXIT_CODE=$?
+          set -e
+
+          if [ $ALIGN_EXIT_CODE -ne 0 ]; then
+            echo "Error: Alignment step failed with exit code $ALIGN_EXIT_CODE"
+            handle_miniwdl_failure $ALIGN_EXIT_CODE
+          fi
+
+          # Extract output from align step
+          ALIGNED_BAM=$(echo "$ALIGN_OUTPUTS" | jq -r '.outputs."pbmm2_align_wgs.aligned_bam"')
+          ALIGNED_BAM_INDEX=$(echo "$ALIGN_OUTPUTS" | jq -r '.outputs."pbmm2_align_wgs.aligned_bam_index"')
+
+          if [ ! -f "$ALIGNED_BAM" ]; then
+            echo "Error: Aligned BAM file not found at $ALIGNED_BAM"
+            exit 1
+          fi
+
+          echo "✅ Step 2/3 completed: Aligned BAM generated"
+
+          # Step 3: Subset BAM to regions specified in fail_reads_bed
+          echo "================================================"
+          echo "🚀 STEP 3/3: Subsetting BAM to fail_reads regions"
+          echo "================================================"
+
+          OUT_PREFIX="${sample_id}.GRCh38.baited_fail_reads"
+          jq -n \
+            --arg bed "$LOCAL_FAIL_READS_BED" \
+            --arg aligned_bam "$ALIGNED_BAM" \
+            --arg aligned_bam_index "$ALIGNED_BAM_INDEX" \
+            --arg ref_index "$LOCAL_REF_INDEX" \
+            --arg out_prefix "$OUT_PREFIX" \
+            '{
+              "bed": $bed,
+              "aligned_bam": $aligned_bam,
+              "aligned_bam_index": $aligned_bam_index,
+              "ref_index": $ref_index,
+              "out_prefix": $out_prefix,
+              "runtime_attributes": {
+                "backend": "HPC",
+                "preemptible_tries": 0,
+                "max_retries": 3,
+                "zones": "",
+                "cpuPlatform": "",
+                "gpuType": "",
+                "container_registry": "quay.io/pacbio"
+              }
+            }' > /scratch/subset_inputs.json
+
+          set +e
+          SUBSET_OUTPUTS=$(miniwdl run \
+            "${TASK_DIR}/wdl/wdl-common/wdl/tasks/samtools.wdl" \
+            --task subset_bam \
+            --dir /scratch/subset_step \
+            --runtime-cpu-max=$AGENT_CPU_CORES \
+            --runtime-memory-max=${AGENT_MEMORY_GB}G \
+            -i /scratch/subset_inputs.json)
+          SUBSET_EXIT_CODE=$?
+          set -e
+
+          if [ $SUBSET_EXIT_CODE -ne 0 ]; then
+            echo "Error: Subset step failed with exit code $SUBSET_EXIT_CODE"
+            handle_miniwdl_failure $SUBSET_EXIT_CODE
+          fi
+
+          # Extract output from subset step
+          SUBSET_BAM=$(echo "$SUBSET_OUTPUTS" | jq -r '.outputs."subset_bam.bam"')
+          SUBSET_BAM_INDEX=$(echo "$SUBSET_OUTPUTS" | jq -r '.outputs."subset_bam.bam_index"')
+
+          if [ ! -f "$SUBSET_BAM" ]; then
+            echo "Error: Subset BAM file not found at $SUBSET_BAM"
+            exit 1
+          fi
+
+          echo "✅ Step 3/3 completed: Subset BAM generated"
+
+          # Post-execution logging
+          FAIL_TARGET_END_TIME=$(date +%s)
+          FAIL_TARGET_DURATION=$((FAIL_TARGET_END_TIME - FAIL_TARGET_START_TIME))
+          FAIL_TARGET_DURATION_HOUR=$((FAIL_TARGET_DURATION / 3600))
+          FAIL_TARGET_DURATION_MIN=$(((FAIL_TARGET_DURATION % 3600) / 60))
+          FAIL_TARGET_DURATION_SEC=$((FAIL_TARGET_DURATION % 60))
+
+          echo "================================================"
+          echo "✅ FAILED TARGET PROCESSING COMPLETED SUCCESSFULLY"
+          echo "================================================"
+          echo "⏱️  Execution Time: ${FAIL_TARGET_DURATION_HOUR}h ${FAIL_TARGET_DURATION_MIN}m ${FAIL_TARGET_DURATION_SEC}s"
+          echo "💾 Remaining Disk Space: $(df -h /scratch | tail -n 1 | awk '{print $4}')"
+          echo "📁 Output Files:"
+          echo "  - Subset BAM: $(basename "$SUBSET_BAM")"
+          echo "  - Subset BAM Index: $(basename "$SUBSET_BAM_INDEX")"
+          echo "================================================"
+
+          # Copy subset BAM and index files to output folder using copy_with_progress
+          copy_with_progress "$output_folder" "$SUBSET_BAM" "$SUBSET_BAM_INDEX"
+
         fi
         
         echo "*************************"

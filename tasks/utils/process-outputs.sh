@@ -36,6 +36,8 @@ if [ -f "/scratch/_LAST/outputs.json" ]; then
                 if [[ "$array_item" == /scratch* ]] && [ -f "$array_item" ]; then
                     echo "Copying file from array: $array_item to $output_folder"
                     cp "$array_item" "$output_folder"
+                    # Sync to ensure file is fully written (important for large BAM files)
+                    sync "$output_folder/$(basename "$array_item")" 2>/dev/null || true
                 elif [ -n "$array_item" ]; then
                     # It's a non-file value in an array, append to a file
                     output_filename="$output_folder/${sample_id}.${output_key}"
@@ -48,6 +50,8 @@ if [ -f "/scratch/_LAST/outputs.json" ]; then
             if [[ "$output_value" == /scratch* ]] && [ -f "$output_value" ]; then
                 echo "Copying file: $output_value to $output_folder"
                 cp "$output_value" "$output_folder"
+                # Sync to ensure file is fully written (important for large BAM files)
+                sync "$output_folder/$(basename "$output_value")" 2>/dev/null || true
             else
                 # It's not a file, write the value to a file
                 output_filename="$output_folder/${sample_id}.${output_key}"

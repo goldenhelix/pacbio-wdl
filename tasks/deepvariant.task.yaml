@@ -2,8 +2,8 @@ name: DeepVariant
 description: Call variants from PacBio HiFi reads using DeepVariant.
 
 agent_requirements:
-  cpu_cores: 64
-  memory_gb: 128
+  cpu_cores: 48
+  memory_gb: 96
 
 parameters:
   - name: sample_id
@@ -43,7 +43,7 @@ steps:
           local exit_code=$1
           echo "MiniWDL run failed with exit code $exit_code"
           echo "Capturing debug information..."
-          bash "$TASK_DIR/miniwdl-debug-capture.sh" /scratch/_LAST "$output_folder" "$TASK_NAME"
+          bash "$TASK_DIR/utils/miniwdl-debug-capture.sh" /scratch/_LAST "$output_folder" "$TASK_NAME"
           exit $exit_code
         }
 
@@ -192,7 +192,7 @@ steps:
         fi
 
         # Process all files and values in outputs.json
-        bash "$TASK_DIR/process-outputs.sh" "$output_folder" "$sample_id" 
+        bash "$TASK_DIR/utils/process-outputs.sh" "$output_folder" "$sample_id" 
 
         if [ $MINIWDL_EXIT_CODE -ne 0 ]; then
           echo "MiniWDL run failed with exit code $MINIWDL_EXIT_CODE"

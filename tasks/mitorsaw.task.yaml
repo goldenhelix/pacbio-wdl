@@ -52,7 +52,7 @@ steps:
           local exit_code=$1
           echo "MiniWDL run failed with exit code $exit_code"
           echo "Capturing debug information..."
-          bash "$TASK_DIR/miniwdl-debug-capture.sh" /scratch/_LAST "$output_folder" "$TASK_NAME"
+          bash "$TASK_DIR/utils/miniwdl-debug-capture.sh" /scratch/_LAST "$output_folder" "$TASK_NAME"
           exit $exit_code
         }
 
@@ -208,7 +208,7 @@ steps:
         
         # Copy outputs to intermediate directory
         echo "Copying outputs to intermediate directory..."
-        bash "$TASK_DIR/process-outputs.sh" "$INTERMEDIATE_OUTPUT" "${sample_id}" 
+        bash "$TASK_DIR/utils/process-outputs.sh" "$INTERMEDIATE_OUTPUT" "${sample_id}" 
         
         # Process VCF file to replace TEST_SAMPLE_NAME with actual sample_id
         echo "Processing VCF file to replace sample name..."

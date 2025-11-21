@@ -24,10 +24,12 @@ def extract_container_hashes(wdl_file):
         content = f.read()
     
     # Pattern to match docker container references with SHA256 hashes
-    pattern = r'docker:\s*"~\{runtime_attributes\.container_registry\}/([^@]+)@sha256:([a-f0-9]{64})"'
+    # Handles both template variables and hardcoded quay.io/pacbio references
+    # Captures the full registry path to preserve it
+    pattern = r'docker:\s*"(~\{runtime_attributes\.container_registry\}/|quay\.io/pacbio/)([^@]+)@sha256:([a-f0-9]{64})"'
     matches = re.findall(pattern, content)
     
-    return [(wdl_file, container, sha) for container, sha in matches]
+    return [(wdl_file, registry_path, container, sha) for registry_path, container, sha in matches]
 
 
 def get_tag_for_hash(container, sha_hash):
@@ -50,7 +52,7 @@ def get_tag_for_hash(container, sha_hash):
         return None
 
 
-def process_wdl_file(wdl_file, container_tags, dry_run=True):
+def process_wdl_file(wdl_file, container_registry_tags, dry_run=True):
     """Update a WDL file with the tag format if matches are found."""
     with open(wdl_file, 'r') as f:
         content = f.read()
@@ -58,11 +60,10 @@ def process_wdl_file(wdl_file, container_tags, dry_run=True):
     modified = False
     changes = []
     
-    for container, sha_hash in container_tags.keys():
-        tag = container_tags[(container, sha_hash)]
+    for (registry_path, container, sha_hash), tag in container_registry_tags.items():
         if tag:
-            old_format = f'docker: "~{{runtime_attributes.container_registry}}/{container}@sha256:{sha_hash}"'
-            new_format = f'docker: "~{{runtime_attributes.container_registry}}/{container}:{tag}"'
+            old_format = f'docker: "{registry_path}{container}@sha256:{sha_hash}"'
+            new_format = f'docker: "{registry_path}{container}:{tag}"'
             
             if old_format in content:
                 if dry_run:
@@ -98,8 +99,8 @@ def main():
     
     # Filter out duplicates while maintaining file information
     unique_hashes = {}
-    for wdl_file, container, sha in all_container_hashes:
-        key = (container, sha)
+    for wdl_file, registry_path, container, sha in all_container_hashes:
+        key = (registry_path, container, sha)
         if key not in unique_hashes:
             unique_hashes[key] = []
         unique_hashes[key].append(wdl_file)
@@ -107,30 +108,30 @@ def main():
     print(f"Found {len(unique_hashes)} unique container references")
     
     # Look up tags for each container hash
-    container_tags = {}
+    container_registry_tags = {}
     print("Looking up tags for container hashes...")
     
     with ThreadPoolExecutor(max_workers=args.threads) as executor:
         future_to_key = {
-            executor.submit(get_tag_for_hash, container, sha): (container, sha)
-            for (container, sha) in unique_hashes.keys()
+            executor.submit(get_tag_for_hash, container, sha): (registry_path, container, sha)
+            for (registry_path, container, sha) in unique_hashes.keys()
         }
         
         for future in future_to_key:
             key = future_to_key[future]
             tag = future.result()
-            container_tags[key] = tag
-            container, sha = key
+            container_registry_tags[key] = tag
+            registry_path, container, sha = key
             if tag:
-                print(f"Found tag '{tag}' for {container}@sha256:{sha}")
+                print(f"Found tag '{tag}' for {registry_path}{container}@sha256:{sha}")
             else:
-                print(f"No tag found for {container}@sha256:{sha}")
+                print(f"No tag found for {registry_path}{container}@sha256:{sha}")
     
     # Output the container-tag mapping if requested
     if args.output:
         output_data = {
-            f"{container}@sha256:{sha}": tag 
-            for (container, sha), tag in container_tags.items() if tag
+            f"{registry_path}{container}@sha256:{sha}": tag 
+            for (registry_path, container, sha), tag in container_registry_tags.items() if tag
         }
         
         with open(args.output, 'w') as f:
@@ -148,7 +149,7 @@ def main():
         total_changes = 0
         
         for wdl_file in wdl_files:
-            modified, changes = process_wdl_file(wdl_file, container_tags, dry_run=dry_run)
+            modified, changes = process_wdl_file(wdl_file, container_registry_tags, dry_run=dry_run)
             if modified:
                 updated_files += 1
                 if dry_run:

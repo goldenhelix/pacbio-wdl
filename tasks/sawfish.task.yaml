@@ -80,7 +80,7 @@ steps:
         local exit_code=$1
         echo "MiniWDL run failed with exit code $exit_code"
         echo "Capturing debug information..."
-        bash "$TASK_DIR/miniwdl-debug-capture.sh" /scratch/_LAST "$output_folder" "$TASK_NAME"
+        bash "$TASK_DIR/utils/miniwdl-debug-capture.sh" /scratch/_LAST "$output_folder" "$TASK_NAME"
         exit $exit_code
       }
 
@@ -398,7 +398,7 @@ steps:
       echo "================================================"
 
       # Copy output files to output folder
-      bash "$TASK_DIR/process-outputs.sh" "$output_folder" "${sample_id}"
+      bash "$TASK_DIR/utils/process-outputs.sh" "$output_folder" "${sample_id}"
 
       # Check if the double-named file exists and rename it to canonical name
       DOUBLE_NAMED_VCF="${output_folder}/${sample_id}.structural_variants.structural_variants.vcf.gz"

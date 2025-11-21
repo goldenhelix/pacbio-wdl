@@ -109,7 +109,7 @@ task split_input_bam {
     RuntimeAttributes runtime_attributes
   }
 
-  String movie = basename(bam, ".bam")
+  String movie = basename(basename(basename(basename(basename(bam, ".fastq.gz"), ".fq.gz"), ".fastq"), ".fq"), ".bam")
 
   Int threads   = 16
   Int mem_gb    = 32
@@ -277,7 +277,7 @@ task pbmm2_align_wgs {
   Int mem_gb    = ceil(threads * 4)
   Int disk_size = ceil(size(bam, "GB") * 2 + size(ref_fasta, "GB") + 70)
 
-  String movie = basename(bam, ".bam")
+  String movie = basename(basename(basename(basename(basename(bam, ".fastq.gz"), ".fq.gz"), ".fastq"), ".fq"), ".bam")
 
   command <<<
     set -euo pipefail

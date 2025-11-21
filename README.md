@@ -25,14 +25,35 @@ This repository provides a comprehensive PacBio HiFi analysis workflow that incl
 
 ### Workflow Parameters
 
-- **uBAM Base Folder**: Directory containing unaligned BAM (uBAM) files to process
-- **Output Folder**: Directory where all results will be stored
+- **Batch TSV File**: A TSV file containing a sample manifest with alignment files and their associated samples
+- **Folder Name**: Optional name for the output folder. If left blank, the name of the folder containing the batch TSV file will be used
+- **Base Output Folder**: The base output folder where the output directory will be created
 - **Cache Udocker Image**: Option to cache Docker images for faster subsequent runs
-- **Sample Sex**: Specify sample sex for analysis (MALE/FEMALE)
 
 ### Input Requirements
 
-The workflow expects PacBio HiFi unaligned BAM (uBAM) files in the input directory. Files should follow the naming pattern `*.*.bam` where the sample identifier is extracted from the filename.
+The workflow expects a TSV (tab-separated values) sample manifest file that maps PacBio HiFi unaligned BAM (uBAM) or FASTQ files to sample identifiers. This format is required because the PacBio sequencer output directory structure does not correspond to sample names, and there are separate directories for `hifi_reads` and `failed_reads` that may be related to the same sample.
+
+The TSV file must contain the following columns:
+- **alignment_file**: Path to the alignment file (uBAM or FASTQ)
+- **sample_id**: Sample identifier
+- **failed_target**: Boolean value (`true` or `false`) indicating whether this is a failed target read file
+
+The format supports one or more HiFi reads uBAM or FASTQ files to be associated with a sample. Files with `failed_target=false` will be processed in parallel and then merged. Files with `failed_target=true` are failed reads that will be merged later in the workflow.
+
+**Example TSV manifest file:**
+
+```
+alignment_file	sample_id	failed_target
+CloudStorage/RevioOutput/1_A01/hifi_reads/m84039_241001_220042_s2.hifi_reads.bc2018.bam	HG002	false
+CloudStorage/RevioOutput/1_A01/hifi_reads/m84039_241001_220042_s2.hifi_reads.bc2019.bam	HG002	false
+CloudStorage/RevioOutput/1_A01/fail_reads/m84039_241001_220042_s2.fail_reads.bc2018.bam	HG002	true
+CloudStorage/RevioOutput/1_B01/hifi_reads/m84039_241001_220043_s3.hifi_reads.bc2020.bam	HG003	false
+CloudStorage/RevioOutput/1_B01/hifi_reads/m84039_241001_220043_s3.hifi_reads.bc2021.bam	HG003	false
+CloudStorage/RevioOutput/1_B01/fail_reads/m84039_241001_220043_s3.fail_reads.bc2020.bam	HG003	true
+```
+
+A directory will be created in the `base_output_folder` with the name specified by `folder_name` (or derived from the parent folder of the input TSV if left blank).
 
 ### Output Structure
 
@@ -89,8 +110,8 @@ The workflow uses the GRCh38 reference genome and associated files that are down
 
 1. **Set up resources**: Configure `RESOURCES_PATH` in Workspace Settings
 2. **Download reference data**: Run the "Download PacBio Reference Data Resources" task
-3. **Prepare input data**: Ensure your PacBio HiFi uBAM files are in the expected directory structure
-4. **Run the workflow**: Execute the PacBio WGS Singleton workflow with appropriate parameters
+3. **Prepare input data**: Create a TSV sample manifest file with columns `alignment_file`, `sample_id`, and `failed_target` mapping your PacBio HiFi uBAM or FASTQ files to sample identifiers
+4. **Run the workflow**: Execute the PacBio WGS Singleton workflow with the batch TSV file, base output folder, and optional folder name
 
 ## Notes
 
