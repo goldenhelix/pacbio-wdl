@@ -237,6 +237,25 @@ steps:
         cp *.vcf.gz "$output_folder/"
         cp *.vcf.gz.tbi "$output_folder/"
         
+        # Update vspipeline_inputs.json with the mitorsaw VCF file
+        echo "Updating vspipeline_inputs.json..."
+        MITORSAW_VCF="${output_folder}/${sample_id}.mitorsaw.vcf.gz"
+        if [ -f "$MITORSAW_VCF" ]; then
+          # Convert absolute path to relative path from workspace root
+          RELATIVE_VCF_PATH="${MITORSAW_VCF#${WORKSPACE_DIR}/}"
+          
+          if ! command -v python3 &> /dev/null; then
+            echo "Warning: python3 not available, skipping vspipeline_inputs.json update"
+          else
+            python3 "${TASK_DIR}/utils/vspipeline_utilities.py" update-vspipeline-json \
+              --input_dir "$output_folder" \
+              --sample "$sample_id" \
+              --file "$RELATIVE_VCF_PATH" \
+              --file_type multiverse || \
+              { echo "Warning: Failed to update vspipeline_inputs.json, continuing..."; }
+          fi
+        fi
+        
         # Copy udocker cache to output folder
         if [ "$cache_udocker_images" = true ] && [ ! -d "${WORKSPACE_DIR}/${RESOURCES_PATH}/udocker_cache/${TASK_NAME}" ]; then
           echo "Copying udocker cache to resources folder..."

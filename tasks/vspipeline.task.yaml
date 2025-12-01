@@ -1,5 +1,5 @@
-name: VSPipeline
-description: Create a VarSeq project and generate PGx and STR reports from a template and input files
+name: Generate VarSeq Projects
+description: Generate a VarSeq project from aVSBatch file.
 auto_generate_session_for_account: "{workspaceBot}"
 
 agent_requirements:
@@ -7,113 +7,142 @@ agent_requirements:
   memory_gb: 32
 
 parameters:
-  - name: base_path
-    label: Input Folder
-    help: The input folder of vcf.gz files to import
-    type: directory
-    supports_location_mode: 'read_only'
-
-  - name: project_directory
-    label: Project Directory
-    help: The directory where the VarSeq project will be created
-    type: directory
-    supports_location_mode: 'read_write'
-    value: AppData/Projects
-
-  - name: project_name
-    label: Project Name
-    help: The name of the VarSeq project to create. If left blank, the name of the input folder will be used.
-    type: string
-    optional: true
-
-  - name: project_template
-    label: Project Template
-    help: The template to use for the VarSeq project
+  - name: vsbatch_file
+    label: VSBatch File
     type: file
+    pattern: "*.vsbatch"
     supports_location_mode: 'read_only'
-    path: AppData/VarSeq/User Data/ProjectTemplates/
-    value: AppData/VarSeq/User Data/ProjectTemplates/PacBio_WDL.vsproject-template
-
-  - name: overwrite_project
-    label: Overwrite Existing VarSeq Projects
-    help: Select to overwrite existing VarSeq projects
-    type: boolean
-    value: "true"
+    help: "The VSBatch file to use for the VarSeq project."
 
 steps:
   - name: vspipeline
-    description: Run VSPipeline and create a VarSeq project
+    description: Run VSPipeline
     type: cmd
     docker:
       image: ${VSPIPELINE_DOCKER_IMAGE}
     args:
       - |- # shell
-        set -eu pipefail
+        set -euo pipefail
 
-        # Set up environment variables from workspace defaults
+        echo "*************************"
+        echo "Starting VSPipeline Task"
+        echo "Space on agent: $(df -h /scratch | tail -n 1 | awk '{print $4}')"
+        echo "Input Parameters:"
+        echo "  - vsbatch_file: $vsbatch_file"
+        echo "*************************"
+
         export GOLDENHELIX_USERDATA=${WORKSPACE_DIR}/AppData
-        if [ -d "$WORKSPACE_DIR/AppData/VarSeq/User Data" ]; then
-          export GH_CRASH_DUMP_DIR="$WORKSPACE_DIR/AppData/VarSeq/User Data"
+
+        if [ ! -f "$vsbatch_file" ]; then
+          echo "Error: VSBatch file not found: $vsbatch_file"
+          exit 1
         fi
-        if [ -d "/scratch" ]; then
-          export GH_TEMPDIR="/scratch"
+
+        # Record start time
+        VSPIPELINE_START_TIME=$(date +%s)
+
+        cd ${WORKSPACE_DIR}
+        
+        # Summarize VSBatch file contents
+        echo ""
+        echo "================================================"
+        echo "VSBatch File Summary"
+        echo "================================================"
+        
+        # Parse multiverse imports
+        multiverse_line=$(grep "^import files=" "$vsbatch_file" 2>/dev/null | head -1 || true)
+        if [ -n "$multiverse_line" ]; then
+            # Extract files portion and count quoted file paths (format: "file1","file2","file3")
+            files_portion=$(echo "$multiverse_line" | sed -n 's/.*files=\(.*\)/\1/p' || echo "")
+            if [ -n "$files_portion" ]; then
+                multiverse_files=$(echo "$files_portion" | grep -o '"[^"]*"' | wc -l || echo "0")
+                echo "  • Importing $multiverse_files multiverse file(s)"
+                # Extract and display file paths
+                echo "$files_portion" | grep -o '"[^"]*"' | sed 's/"//g' | while read -r file_path; do
+                    echo "    - $file_path"
+                done || true
+            fi
         fi
         
-        # Check if project template exists and matches the current workspace assembly
-        if [ ! -f "$project_template" ]; then
-          echo "Error: Project template file '$project_template' does not exist."
-          exit 1
-        fi
-        if ! grep -q "\"genome\": \"$GH_WORKSPACE_ASSEMBLY\"" "$project_template"; then
-          echo "Error: Project template does not match the current workspace assembly: $GH_WORKSPACE_ASSEMBLY"
-          exit 1
-        fi
-
-        # Create project directory if it doesn't exist, and check for project directory
-        mkdir -p ${project_directory}
-        if [[ -d "${project_directory}/${project_name}" && "${overwrite_project}" == "false" ]]; then
-          echo "Project directory already exists and overwrite is set to false"
-          exit 1
-        fi
-
-        # If project_name is not provided, use the base directory name
-        if [[ -z "${project_name}" ]]; then
-          project_name=$(basename "${base_path}")
-        fi
-
-        echo "Running VSPipeline and creating VarSeq project"
-        echo "Output path: ${project_directory}/${project_name}"
-
-        cd "${base_path}"
-        variant_files=$(find . \( -name "*.small_variants.phased.vcf.gz" -o -name "*.trgt.sorted.phased.vcf.gz" -o -name "*.mitorsaw.vcf.gz" \) -type f | paste -sd ',' - | sed 's/\([^,]*\)/\1/g')
-        sv_files=$(find . -name "*.structural_variants.phased.vcf.gz" -type f | paste -sd ',' - | sed 's/\([^,]*\)/\1/g')
-
-        if [[ -z "${variant_files}" ]]; then
-          echo "No VCF files found in the specified directory."
-          exit 1
-        fi
-
-        if [[ -z "${sv_files}" ]]; then
-          echo "No structural_variants.phased.vcf.gz file found in the specified directory."
-          exit 1
+        # Parse CNV imports
+        cnv_line=$(grep "^update_cnv_import" "$vsbatch_file" 2>/dev/null | head -1 || true)
+        if [ -n "$cnv_line" ]; then
+            # Extract files portion (before table_id=)
+            files_portion=$(echo "$cnv_line" | sed -n 's/.*files=\(.*\) table_id=.*/\1/p' || echo "")
+            if [ -n "$files_portion" ]; then
+                cnv_files=$(echo "$files_portion" | grep -o '"[^"]*"' | wc -l || echo "0")
+                cnv_table=$(echo "$cnv_line" | sed -n 's/.*table_id="\([^"]*\)".*/\1/p' || echo "")
+                if [ -n "$cnv_table" ]; then
+                    echo "  • Importing $cnv_files CNV file(s) into table \"$cnv_table\""
+                    # Extract and display file paths
+                    echo "$files_portion" | grep -o '"[^"]*"' | sed 's/"//g' | while read -r file_path; do
+                        echo "    - $file_path"
+                    done || true
+                fi
+            fi
         fi
         
-        # Write the VSPipeline commands to a file
-        cat <<EOF > "${project_directory}/${project_name}.vs-batch"
-        get_version
-        project_create "${project_directory}/${project_name}" "${project_template}" ${overwrite_project:+overwrite=true}
-        import files="${variant_files}" append_files_with_same_samples=True sample_fields_catalog=SampleCatalog
-        update_bnd_import table_id="BNDs" files="${sv_files}"
-        download_required_sources
-        task_wait
-        get_task_list
-        foreach_sample "table_recordset_add_current SmallVariants VA"
-        foreach_sample "table_recordset_add_current STRs TR"
-        run_project_report STR_Report_Template true true '[{ "name":"Variant Record Set", "value": "VA" }, { "name":"Str Record Set", "value": "TR" }]'
-        run_project_report PGX_Report_Template true true
-        project_close
-        EOF
+        # Parse BND imports
+        bnd_line=$(grep "^update_bnd_import" "$vsbatch_file" 2>/dev/null | head -1 || true)
+        if [ -n "$bnd_line" ]; then
+            # Extract files portion (before table_id=)
+            files_portion=$(echo "$bnd_line" | sed -n 's/.*files=\(.*\) table_id=.*/\1/p' || echo "")
+            if [ -n "$files_portion" ]; then
+                bnd_files=$(echo "$files_portion" | grep -o '"[^"]*"' | wc -l || echo "0")
+                bnd_table=$(echo "$bnd_line" | sed -n 's/.*table_id="\([^"]*\)".*/\1/p' || echo "")
+                if [ -n "$bnd_table" ]; then
+                    echo "  • Importing $bnd_files breakend file(s) into table \"$bnd_table\""
+                    # Extract and display file paths
+                    echo "$files_portion" | grep -o '"[^"]*"' | sed 's/"//g' | while read -r file_path; do
+                        echo "    - $file_path"
+                    done || true
+                fi
+            fi
+        fi
+        
+        # Parse region imports
+        region_line=$(grep "^update_region_import" "$vsbatch_file" 2>/dev/null | head -1 || true)
+        if [ -n "$region_line" ]; then
+            # Extract files portion (before table_id=)
+            files_portion=$(echo "$region_line" | sed -n 's/.*files=\(.*\) table_id=.*/\1/p' || echo "")
+            if [ -n "$files_portion" ]; then
+                region_files=$(echo "$files_portion" | grep -o '"[^"]*"' | wc -l || echo "0")
+                region_table=$(echo "$region_line" | sed -n 's/.*table_id="\([^"]*\)".*/\1/p' || echo "")
+                if [ -n "$region_table" ]; then
+                    echo "  • Importing $region_files region file(s) into table \"$region_table\""
+                    # Extract and display file paths
+                    echo "$files_portion" | grep -o '"[^"]*"' | sed 's/"//g' | while read -r file_path; do
+                        echo "    - $file_path"
+                    done || true
+                fi
+            fi
+        fi
+        
+        echo "================================================"
+        echo ""
+        
 
-        /opt/vspipeline/vspipeline -c batch file="${project_directory}/${project_name}.vs-batch" || { echo "VSPipeline failed"; exit 1; }
+        echo "================================================"
+        echo "Running VSPipeline"
+        echo "================================================"
 
-        rm -rf "${project_directory}/${project_name}.vs-batch"
+        vspipeline -c get_version
+        vspipeline -c batch file="$vsbatch_file"
+        # > /dev/null 2>/scratch/vspipeline_error.log || { echo "VSPipeline failed"; exit 1; }
+
+        # Record end time and calculate duration
+        VSPIPELINE_END_TIME=$(date +%s)
+        VSPIPELINE_DURATION=$((VSPIPELINE_END_TIME - VSPIPELINE_START_TIME))
+        VSPIPELINE_DURATION_HOUR=$((VSPIPELINE_DURATION / 3600))
+        VSPIPELINE_DURATION_MIN=$(((VSPIPELINE_DURATION % 3600) / 60))
+        VSPIPELINE_DURATION_SEC=$((VSPIPELINE_DURATION % 60))
+
+        echo "================================================"
+        echo "✅ VSPIPELINE COMPLETED SUCCESSFULLY"
+        echo "================================================"
+        echo "⏱️  Execution Time: ${VSPIPELINE_DURATION_HOUR}h ${VSPIPELINE_DURATION_MIN}m ${VSPIPELINE_DURATION_SEC}s"
+        echo "================================================"
+        echo ""
+        echo "*************************"
+        echo "VSPipeline Task completed successfully"
+        echo "*************************"

@@ -28,7 +28,7 @@ steps:
     docker:
       image: ${VSPIPELINE_DOCKER_IMAGE}
     args:
-      - |-
+      - |- # shell
         set -eu pipefail
 
         export GOLDENHELIX_USERDATA=${WORKSPACE_DIR}/AppData

@@ -267,6 +267,48 @@ steps:
         rm -f "$output_folder/$(basename "$trgt_vcf_index")"
         rm -f "$output_folder/$(basename "$aligned_bam")"
         rm -f "$output_folder/$(basename "$aligned_bam_index")"        
+
+        # Update vspipeline_inputs.json with phased VCF files
+        echo "Updating vspipeline_inputs.json..."
+        if ! command -v python3 &> /dev/null; then
+          echo "Warning: python3 not available, skipping vspipeline_inputs.json update"
+        else
+          # Add small variants phased VCF to multiverse
+          SMALL_VARIANTS_PHASED_VCF="${output_folder}/${sample_id}.small_variants.phased.vcf.gz"
+          if [ -f "$SMALL_VARIANTS_PHASED_VCF" ]; then
+            RELATIVE_PATH="${SMALL_VARIANTS_PHASED_VCF#${WORKSPACE_DIR}/}"
+            python3 "${TASK_DIR}/utils/vspipeline_utilities.py" update-vspipeline-json \
+              --input_dir "$output_folder" \
+              --sample "$sample_id" \
+              --file "$RELATIVE_PATH" \
+              --file_type multiverse || \
+              { echo "Warning: Failed to update vspipeline_inputs.json for small variants, continuing..."; }
+          fi
+          
+          # Add structural variants phased VCF to bnd
+          SV_PHASED_VCF="${output_folder}/${sample_id}.structural_variants.phased.vcf.gz"
+          if [ -f "$SV_PHASED_VCF" ]; then
+            RELATIVE_PATH="${SV_PHASED_VCF#${WORKSPACE_DIR}/}"
+            python3 "${TASK_DIR}/utils/vspipeline_utilities.py" update-vspipeline-json \
+              --input_dir "$output_folder" \
+              --sample "$sample_id" \
+              --file "$RELATIVE_PATH" \
+              --file_type bnd || \
+              { echo "Warning: Failed to update vspipeline_inputs.json for structural variants, continuing..."; }
+          fi
+          
+          # Add TRGT phased VCF to multiverse
+          TRGT_PHASED_VCF="${output_folder}/${sample_id}.trgt.sorted.phased.vcf.gz"
+          if [ -f "$TRGT_PHASED_VCF" ]; then
+            RELATIVE_PATH="${TRGT_PHASED_VCF#${WORKSPACE_DIR}/}"
+            python3 "${TASK_DIR}/utils/vspipeline_utilities.py" update-vspipeline-json \
+              --input_dir "$output_folder" \
+              --sample "$sample_id" \
+              --file "$RELATIVE_PATH" \
+              --file_type multiverse || \
+              { echo "Warning: Failed to update vspipeline_inputs.json for TRGT, continuing..."; }
+          fi
+        fi
         
         echo "*************************"
         echo "HiPhase VCF phasing and BAM haplotagging completed successfully"

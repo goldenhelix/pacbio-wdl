@@ -312,6 +312,25 @@ steps:
           
           # Copy output of methbat to output folder
           bash "$TASK_DIR/utils/process-outputs.sh" "$output_folder" "${sample_id}" 
+          
+          # Update vspipeline_inputs.json with the methbat profile file
+          echo "Updating vspipeline_inputs.json..."
+          METHBAT_PROFILE="${output_folder}/${sample_id}.${REF_NAME}.methbat.profile.tsv"
+          if [ -f "$METHBAT_PROFILE" ]; then
+            # Convert absolute path to relative path from workspace root
+            RELATIVE_PROFILE_PATH="${METHBAT_PROFILE#${WORKSPACE_DIR}/}"
+            
+            if ! command -v python3 &> /dev/null; then
+              echo "Warning: python3 not available, skipping vspipeline_inputs.json update"
+            else
+              python3 "${TASK_DIR}/utils/vspipeline_utilities.py" update-vspipeline-json \
+                --input_dir "$output_folder" \
+                --sample "$sample_id" \
+                --file "$RELATIVE_PROFILE_PATH" \
+                --file_type region || \
+                { echo "Warning: Failed to update vspipeline_inputs.json, continuing..."; }
+            fi
+          fi
         else
           echo "No CpG pileup BED files found, skipping MethBat analysis"
         fi

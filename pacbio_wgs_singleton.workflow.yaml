@@ -476,38 +476,56 @@ stages:
         - task_parameter_name: sample_name
           expression: '${2}'
   
-  - name: VSPipeline
-    description: Create a project with called variants
+  - name: Generate VSBatch File for VSPipeline
+    description: Generate one VSBatch file per set of related samples
+    task_path: tasks/generate_vsbatch.task.yaml
     run_step: optional_default_skip
-    task_path: tasks/vspipeline.task.yaml
     depends_on:
-      - HiPhase
       - Mitorsaw
-      - Upload PGx Results
-
+      - CpG and MethBat Analysis
+      - HiPhase
+    
     task_parameters:
-      - name: base_path
+      - name: input_folder
         label: Input Folder
         type: stage
-        stage: Prepare Directories
+        stage: pbmm2 Alignment
         stage_parameter_expression: "${output_folder}"
 
-      - name: project_name
-        label: Project Name
-        type: string
-        optional: true
-        help: "The name of the VarSeq project to create. If not provided, the project name will be derived from the sample name derived from the glob expression."
-
-      - name: project_template
+      - name: vsproject_template
         label: VarSeq Project Template
         type: file
         supports_location_mode: 'read_only'
         help: "The template to use for the VarSeq project."
         path: AppData/VarSeq/User Data/ProjectTemplates/
-        value: AppData/VarSeq/User Data/ProjectTemplates/PacBio_WDL.vsproject-template
 
       - name: overwrite_project
         label: Overwrite Existing VarSeq Projects
         type: boolean
         value: "true"
         help: "If enabled, existing VarSeq projects with the same name will be overwritten."
+
+      - name: cohort
+        label: Cohort Mode
+        type: boolean
+        value: "false"
+        help: "If enabled, put all samples into a single cohort group instead of finding relationships between them."
+
+  - name: Create VarSeq Project with VSPipeline
+    description: Create a VarSeq project with the VSPipeline based on the VSBatch file
+    task_path: tasks/vspipeline.task.yaml
+    run_step: optional_default_skip
+    depends_on:
+      - Upload PGx Results
+      - Generate VSBatch File for VSPipeline
+
+    glob_parameter:
+      label: Input Folder
+      path:
+        type: stage
+        stage: Generate VSBatch File for VSPipeline
+        parameter: input_folder
+      glob_ex: '**/*.vsbatch'
+      output_parameters:
+        - task_parameter_name: vsbatch_file
+          expression: '${0}'
