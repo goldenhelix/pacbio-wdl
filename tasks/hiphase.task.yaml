@@ -281,7 +281,9 @@ steps:
               --input_dir "$output_folder" \
               --sample "$sample_id" \
               --file "$RELATIVE_PATH" \
-              --file_type multiverse || \
+              --file_type multiverse \
+              --task_name hiphase \
+              --scratch_dir /scratch || \
               { echo "Warning: Failed to update vspipeline_inputs.json for small variants, continuing..."; }
           fi
           
@@ -293,7 +295,9 @@ steps:
               --input_dir "$output_folder" \
               --sample "$sample_id" \
               --file "$RELATIVE_PATH" \
-              --file_type bnd || \
+              --file_type bnd \
+              --task_name hiphase \
+              --scratch_dir /scratch || \
               { echo "Warning: Failed to update vspipeline_inputs.json for structural variants, continuing..."; }
           fi
           
@@ -305,7 +309,9 @@ steps:
               --input_dir "$output_folder" \
               --sample "$sample_id" \
               --file "$RELATIVE_PATH" \
-              --file_type multiverse || \
+              --file_type multiverse \
+              --task_name hiphase \
+              --scratch_dir /scratch || \
               { echo "Warning: Failed to update vspipeline_inputs.json for TRGT, continuing..."; }
           fi
         fi

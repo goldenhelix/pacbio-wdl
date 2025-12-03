@@ -41,7 +41,8 @@ steps:
         set -eu pipefail  
 
         # Implementation notes:
-        # - Uses vspipeline_inputs.json file to determine samples and file paths
+        # - Uses per-sample, per-task vspipeline_inputs.json files to determine samples and file paths
+        # - Finds all *_vspipeline_inputs.json files and merges them
         # - Queries sample catalog for tumor/normal relationships
         # - Groups related samples and generates VSBatch files
         # - Supports multiverse, CNV, breakend, and region file imports based on template capabilities
@@ -53,24 +54,32 @@ steps:
         cd /scratch
 
         #############################
-        # Find related samples
+        # Find and merge vspipeline_inputs.json files
         #############################
 
-        # Look for vspipeline_inputs.json file in the input folder
-        echo "Searching for vspipeline_inputs.json in $input_folder..."
+        # Look for all per-sample, per-task vspipeline_inputs.json files in the input folder
+        echo "Searching for *_vspipeline_inputs.json files in $input_folder..."
 
-        vspipeline_inputs="${input_folder}/vspipeline_inputs.json"
-        if [ ! -f "$vspipeline_inputs" ]; then
-            echo "Error: vspipeline_inputs.json file not found in $input_folder"
+        # Find all JSON files matching the pattern
+        vspipeline_inputs_files=$(find "$input_folder" -maxdepth 1 -name "*_vspipeline_inputs.json" -type f | sort)
+        
+        if [ -z "$vspipeline_inputs_files" ]; then
+            echo "Error: No *_vspipeline_inputs.json files found in $input_folder"
             exit 1
         fi
 
-        echo "Found vspipeline_inputs.json: $vspipeline_inputs"
+        # Count files found
+        file_count=$(echo "$vspipeline_inputs_files" | wc -l)
+        echo "Found $file_count vspipeline_inputs.json file(s):"
+        echo "$vspipeline_inputs_files" | while read -r file; do
+            echo "  • $(basename "$file")"
+        done
 
-        # Extract sample names from the JSON file
-        echo "Extracting sample names from vspipeline_inputs.json..."
+        # Extract sample names from all JSON files
+        echo "Extracting sample names from all vspipeline_inputs.json files..."
 
-        sample_names=$(jq -r '.samples | keys[]' "$vspipeline_inputs")
+        # Collect all unique sample names from all JSON files
+        sample_names=$(echo "$vspipeline_inputs_files" | xargs -I {} sh -c 'jq -r ".samples | keys[]" "{}" 2>/dev/null' | sort -u)
 
         echo "Found samples:"
         echo "$sample_names" | while read -r sample; do
@@ -145,12 +154,35 @@ steps:
         # For each set of related samples, generate a VSBatch file
         #############################
 
-        python3 "${TASK_DIR}/utils/vspipeline_utilities.py" \
-            generate-vsbatch $( [[ "$cohort" == "true" ]] && echo "--cohort" ) \
-            --template "$vsproject_template" \
-            --samples "related_samples.csv" \
-            --sample_files "$vspipeline_inputs" \
-            --overwrite_project "$overwrite_project" 
+        # Build command with all JSON files as arguments
+        # Store files in an array to properly handle spaces in paths
+        json_files_array=()
+        while IFS= read -r file; do
+            if [ -n "$file" ]; then
+                json_files_array+=("$file")
+            fi
+        done <<< "$vspipeline_inputs_files"
+
+        # Build the Python command with all JSON files
+        python_cmd=(
+            python3 "${TASK_DIR}/utils/vspipeline_utilities.py"
+            generate-vsbatch
+        )
+        
+        # Add --cohort flag if needed
+        if [ "$cohort" == "true" ]; then
+            python_cmd+=(--cohort)
+        fi
+        
+        # Add template, samples, and all JSON files
+        python_cmd+=(--template "$vsproject_template")
+        python_cmd+=(--samples "related_samples.csv")
+        python_cmd+=(--sample_files "${json_files_array[@]}")
+        python_cmd+=(--overwrite_project "$overwrite_project")
+        python_cmd+=(--scratch_dir "/scratch")
+        
+        # Execute the command
+        "${python_cmd[@]}" 
 
         echo "VSBatch files generated for all related samples"
 

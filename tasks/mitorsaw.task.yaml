@@ -251,7 +251,9 @@ steps:
               --input_dir "$output_folder" \
               --sample "$sample_id" \
               --file "$RELATIVE_VCF_PATH" \
-              --file_type multiverse || \
+              --file_type multiverse \
+              --task_name mitorsaw \
+              --scratch_dir /scratch || \
               { echo "Warning: Failed to update vspipeline_inputs.json, continuing..."; }
           fi
         fi
