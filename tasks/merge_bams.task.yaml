@@ -59,10 +59,15 @@ steps:
 
         # Check if there is only one BAM file found
         if [ ${#INPUT_BAMS[@]} -eq 1 ]; then
-          echo "Only one BAM file found, renaming to aligned.bam"
+          echo "Only one BAM file found, copying to aligned.bam"
           if [[ "$(basename "${INPUT_BAMS[0]}")" != "${sample_id}.aligned.bam" ]]; then
-            mv "${INPUT_BAMS[0]}" "${input_folder}/${sample_id}.aligned.bam"
-            mv "${INPUT_BAMS[0]}.bai" "${input_folder}/${sample_id}.aligned.bam.bai"
+            # Use cp + rm instead of mv for S3 mounts that don't support atomic rename
+            cp "${INPUT_BAMS[0]}" "${input_folder}/${sample_id}.aligned.bam"
+            if [ -f "${INPUT_BAMS[0]}.bai" ]; then
+              cp "${INPUT_BAMS[0]}.bai" "${input_folder}/${sample_id}.aligned.bam.bai"
+              rm -f "${INPUT_BAMS[0]}.bai"
+            fi
+            rm -f "${INPUT_BAMS[0]}"
           fi
           exit 0
         fi
