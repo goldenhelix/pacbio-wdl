@@ -229,7 +229,7 @@ steps:
         
         # Recompress and index the VCF
         bgzip "${VCF_BASE}.vcf"
-        tabix -p vcf "${VCF_BASE}.vcf.gz"
+        tabix -f -p vcf "${VCF_BASE}.vcf.gz" || { echo "Warning: Failed to index VCF file"; if [ ! -f "${VCF_BASE}.vcf.gz.tbi" ]; then echo "Index file does not exist"; else echo "Index file exists, continuing..."; fi; }
 
         # Copy processed files to final output folder
         echo "Copying processed files to output folder..."
